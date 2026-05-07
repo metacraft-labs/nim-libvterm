@@ -1,0 +1,8 @@
+test-logs/
+nimcache/
+nim-cache/
+*.exe
+tests/test_*
+!tests/test_*.nim
+.direnv/
+.pre-commit-config.yaml
