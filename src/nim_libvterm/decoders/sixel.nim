@@ -11,9 +11,9 @@
 ##   * Palette setup:
 ##       `#<n>;<type>;<a>;<b>;<c>`
 ##     where type=2 selects RGB on the 0..100 percentage scale (DEC's
-##     native scale; we map to 0..255 by `*255 div 100`).  type=1 is HLS
-##     and is rejected as out of scope -- no production fixture uses it
-##     in our test corpus.
+##     native scale; we map to 0..255 by `*255 div 100`), and type=1
+##     selects HLS with H ∈ [0, 360°], L ∈ [0, 100], S ∈ [0, 100]
+##     (DEC's canonical Sixel HLS encoding -- see `hlsToRgb` below).
 ##   * Pen select: `#<n>` (no semicolon-delimited tail).
 ##   * Sixel data chars: `?` (0x3F) through `~` (0x7E). Each char encodes
 ##     six vertical pixels in the current band; bit 0 (LSB) = top pixel,
@@ -28,16 +28,47 @@
 ## raster attributes when present, otherwise the bounding box of the
 ## actually-painted pixels.
 ##
-## Anything outside the subset above (HLS palette, conformance-only
-## escapes, embedded `;` runs) raises `SixelDecodeError`. The deferred
-## bullet on the L2 milestone notes this: a strict subset covers the
-## fixture corpus we ship; future protocol work expands it.
+## Anything outside the subset above (conformance-only escapes,
+## embedded `;` runs) raises `SixelDecodeError`. The deferred bullet on
+## the L2 milestone notes this: a strict subset covers the fixture
+## corpus we ship; future protocol work expands it.
 
 import ../image_types
 export image_types
 
 type
   SixelDecodeError* = object of CatchableError
+
+proc hlsToRgb*(h: int; l: int; s: int): (uint8, uint8, uint8) =
+  ## DEC Sixel HLS palette mode: H ∈ [0, 360°], L ∈ [0, 100],
+  ## S ∈ [0, 100]. Returns 8-bit RGB.
+  ##
+  ## Reference test vectors (verified):
+  ##   (0, 0, 0)        -> (0, 0, 0)         pure black
+  ##   (0, 100, 0)      -> (255, 255, 255)   pure white
+  ##   (0, 50, 100)     -> (255, 0, 0)       saturated red
+  ##   (120, 50, 100)   -> (0, 255, 0)       saturated green
+  ##   (240, 50, 100)   -> (0, 0, 255)       saturated blue
+  ##   (0, 50, 0)       -> (128, 128, 128)   neutral grey (S=0 short-circuit)
+  let lf = l.float / 100.0
+  let sf = s.float / 100.0
+  if sf == 0.0:
+    let v = uint8(lf * 255.0 + 0.5)
+    return (v, v, v)
+  let q = if lf < 0.5: lf * (1.0 + sf) else: lf + sf - lf * sf
+  let p = 2.0 * lf - q
+  proc f(p, q, t: float): uint8 =
+    var t = t
+    if t < 0.0: t += 1.0
+    if t > 1.0: t -= 1.0
+    let v =
+      if t < 1.0 / 6.0: p + (q - p) * 6.0 * t
+      elif t < 0.5: q
+      elif t < 2.0 / 3.0: p + (q - p) * (2.0 / 3.0 - t) * 6.0
+      else: p
+    uint8(v * 255.0 + 0.5)
+  let hf = h.float / 360.0
+  result = (f(p, q, hf + 1.0 / 3.0), f(p, q, hf), f(p, q, hf - 1.0 / 3.0))
 
 proc decodeSixel*(payload: string): Image =
   ## Decode a Sixel payload into an `Image`.
@@ -243,7 +274,14 @@ proc decodeSixel*(payload: string): Image =
           let b = clamp((nums[3] * 255) div 100, 0, 255)
           if n >= 0 and n < 256:
             palette[n] = [byte(r), byte(g), byte(b), byte(255)]
-        # type=1 (HLS) -- not implemented; silently leave palette[n].
+        elif nIdx >= 4 and nums[0] == 1:
+          # HLS: H ∈ [0, 360], L ∈ [0, 100], S ∈ [0, 100].
+          let hClamped = clamp(nums[1], 0, 360)
+          let lClamped = clamp(nums[2], 0, 100)
+          let sClamped = clamp(nums[3], 0, 100)
+          let (r, g, b) = hlsToRgb(hClamped, lClamped, sClamped)
+          if n >= 0 and n < 256:
+            palette[n] = [r, g, b, byte(255)]
         pen = (if n >= 0 and n < 256: n else: pen)
       else:
         # Pen select.
