@@ -63,6 +63,24 @@ type
   ExtUnderlineState* = enum
     esuNone, esuDotted, esuDashed
 
+  ExtColorKind* = enum
+    ## Storage discriminant for the per-cell extended underline-color
+    ## grid. `eckDefault` is the sentinel "no explicit underline color"
+    ## value (consumers fall back to the foreground); `eckIndexed` is a
+    ## 256-color palette index; `eckRgb` is 24-bit truecolor.
+    eckDefault, eckIndexed, eckRgb
+
+  ExtColor* = object
+    ## Per-cell underline color storage. We mirror the public `Color`
+    ## type but keep it inside this module so `extended_state` does not
+    ## depend on `screen`. Conversion to the public `Color` happens in
+    ## `screen.cellAt`. `eckDefault` is the sentinel (foreground).
+    case kind*: ExtColorKind
+    of eckDefault: discard
+    of eckIndexed: idx*: uint8
+    of eckRgb:
+      r*, g*, b*: uint8
+
   KittyKeyFlag* = enum
     kkfDisambiguate
     kkfReportEvents
@@ -87,6 +105,7 @@ type
     cwd: string
     syncOutput: bool
     extUnderlinePen: ExtUnderlineState
+    extUnderlineColorPen: ExtColor
     kittyStack: seq[set[KittyKeyFlag]]
     modifyKeysLevel: int
     mouseProto: MouseProtocol
@@ -103,6 +122,21 @@ type
     extUnderlineGridRows: int
     extUnderlineGridCols: int
     extUnderlineGrid: seq[uint8]
+
+    # Per-cell extended-underline-color grid. Stamped by the same chunked
+    # walker that maintains `extUnderlineGrid`, but tracks the active
+    # underline color set via `CSI 58` / cleared via `CSI 59`. The grid
+    # is a flat byte buffer, 4 bytes per cell:
+    #   [0] kind: 0=default, 1=indexed, 2=rgb
+    #   [1] r (rgb) / idx (indexed) / unused (default)
+    #   [2] g (rgb) / unused otherwise
+    #   [3] b (rgb) / unused otherwise
+    # We picked the inline byte layout (rather than `seq[ExtColor]`) so
+    # the grid stays dense and resize-cheap, matching the
+    # `extUnderlineGrid` byte buffer.
+    extUnderlineColorGridRows: int
+    extUnderlineColorGridCols: int
+    extUnderlineColorGrid: seq[uint8]
 
     # OSC 8 hyperlink table
     hyperlinkTable: Table[uint32, Hyperlink]
@@ -548,8 +582,20 @@ proc handleOsc*(e: var ExtendedState; command: int;
 # the only goal here is to record extended-protocol state in our overlay.
 
 proc handleSgrArgs(e: var ExtendedState; args: openArray[clong]) =
-  ## Walk SGR args looking for CSI 4 : N m runs. We only set the extended
-  ## underline state; libvterm handles the underline:0/1/2/3 forms itself.
+  ## Walk SGR args looking for CSI 4 : N m runs and CSI 58/59 m
+  ## underline-color runs. libvterm handles the underline:0/1/2/3 forms
+  ## itself (in its own 2-bit field) and is unaware of CSI 58 / 59.
+  ##
+  ## Supported underline-color shapes:
+  ##   * `58 : 2 : <colorspace> : R : G : B`  -- truecolor RGB. The
+  ##     colorspace parameter (slot after `2`) is ignored: real-world
+  ##     emitters send either an empty slot (`58:2::R:G:B`) or `0`
+  ##     (`58:2:0:R:G:B`) and the value is purely informational.
+  ##   * `58 : 5 : N`  -- 256-color palette index.
+  ##   * `59`          -- reset underline color to default (foreground).
+  ##
+  ## A leading `0` (full SGR reset) clears both the style and color
+  ## pens, matching `CSI 0 m` semantics.
   var i = 0
   while i < args.len:
     let raw = args[i].uint32
@@ -557,6 +603,7 @@ proc handleSgrArgs(e: var ExtendedState; args: openArray[clong]) =
     let hasMore = (raw and (uint32(1) shl 31)) != 0
     if value == 0:
       e.extUnderlinePen = esuNone
+      e.extUnderlineColorPen = ExtColor(kind: eckDefault)
       inc i
       continue
     if value == 4 and hasMore and i + 1 < args.len:
@@ -573,6 +620,55 @@ proc handleSgrArgs(e: var ExtendedState; args: openArray[clong]) =
       inc i  # consume the final non-MORE token
     elif value == 24:
       e.extUnderlinePen = esuNone
+      inc i
+    elif value == 59:
+      # `CSI 59 m` -- reset underline color to default. If this token
+      # carries the MORE bit (rare; the spec doesn't define
+      # sub-params for 59), drain the following colon-continuation
+      # tokens defensively.
+      e.extUnderlineColorPen = ExtColor(kind: eckDefault)
+      inc i
+      if hasMore:
+        while i < args.len and
+              (args[i].uint32 and (uint32(1) shl 31)) != 0:
+          inc i
+        if i < args.len: inc i
+    elif value == 58 and hasMore:
+      # `CSI 58 : 2 : <space> : R : G : B`  or  `CSI 58 : 5 : N`.
+      # Walk the entire colon-run (every token with the MORE bit set,
+      # plus the final non-MORE token), peel off the form selector
+      # (`2` or `5`), then build the color from the remaining slots.
+      var run: seq[int] = @[]
+      run.add value
+      inc i
+      while i < args.len:
+        let t = args[i].uint32
+        run.add int(t and not (uint32(1) shl 31))
+        inc i
+        if (t and (uint32(1) shl 31)) == 0: break
+      # `run` now holds [58, form, ...payload...]. The payload depends
+      # on `form`:
+      #   form == 2 -> [colorspace?, R, G, B] OR [R, G, B] depending on
+      #                whether the emitter included an explicit
+      #                colorspace token. We ignore the colorspace value
+      #                and pick the LAST three tokens as RGB so the
+      #                parser tolerates both shapes.
+      #   form == 5 -> [N] -- single palette index.
+      if run.len >= 2:
+        let form = run[1]
+        if form == 2 and run.len >= 5:
+          let r = uint8(run[run.len - 3] and 0xff)
+          let g = uint8(run[run.len - 2] and 0xff)
+          let b = uint8(run[run.len - 1] and 0xff)
+          e.extUnderlineColorPen = ExtColor(kind: eckRgb, r: r, g: g, b: b)
+        elif form == 5 and run.len >= 3:
+          let idx = uint8(run[2] and 0xff)
+          e.extUnderlineColorPen = ExtColor(kind: eckIndexed, idx: idx)
+        # Other forms (e.g. CMYK 58:3, CIE 58:4) fall through unchanged
+        # -- they're vanishingly rare and not in our minimum coverage.
+    elif value == 58:
+      # Bare `CSI 58 m` (no sub-params) is undefined; treat as reset.
+      e.extUnderlineColorPen = ExtColor(kind: eckDefault)
       inc i
     else:
       inc i
@@ -689,6 +785,13 @@ proc resizeGrids*(e: var ExtendedState; rows, cols: int) =
     e.extUnderlineGridRows = rows
     e.extUnderlineGridCols = cols
     e.extUnderlineGrid = newSeq[uint8](rows * cols)
+  # Extended-underline-color grid: 4 bytes per cell (kind + r/idx + g + b).
+  if e.extUnderlineColorGridRows != rows or
+     e.extUnderlineColorGridCols != cols or
+     e.extUnderlineColorGrid.len != rows * cols * 4:
+    e.extUnderlineColorGridRows = rows
+    e.extUnderlineColorGridCols = cols
+    e.extUnderlineColorGrid = newSeq[uint8](rows * cols * 4)
 
 proc stampExtUnderlineCell*(e: var ExtendedState; row, col: int) =
   ## Stamp one cell of the extended-underline grid with the current pen.
@@ -718,6 +821,57 @@ proc extUnderlineCellAt*(e: ExtendedState; row, col: int): ExtUnderlineState =
   of 1'u8: esuDotted
   of 2'u8: esuDashed
   else:    esuNone
+
+proc stampExtUnderlineColorCell*(e: var ExtendedState; row, col: int) =
+  ## Stamp one cell of the extended-underline-color grid with the current
+  ## color pen. Mirrors `stampExtUnderlineCell`. Called by the chunked
+  ## feed walker for each cell touched by a glyph emission within a
+  ## fixed-pen run.
+  if e.extUnderlineColorGrid.len == 0: return
+  let rows = e.extUnderlineColorGridRows
+  let cols = e.extUnderlineColorGridCols
+  if rows <= 0 or cols <= 0: return
+  if row < 0 or row >= rows or col < 0 or col >= cols: return
+  let base = (row * cols + col) * 4
+  case e.extUnderlineColorPen.kind
+  of eckDefault:
+    e.extUnderlineColorGrid[base] = 0'u8
+    e.extUnderlineColorGrid[base + 1] = 0'u8
+    e.extUnderlineColorGrid[base + 2] = 0'u8
+    e.extUnderlineColorGrid[base + 3] = 0'u8
+  of eckIndexed:
+    e.extUnderlineColorGrid[base] = 1'u8
+    e.extUnderlineColorGrid[base + 1] = e.extUnderlineColorPen.idx
+    e.extUnderlineColorGrid[base + 2] = 0'u8
+    e.extUnderlineColorGrid[base + 3] = 0'u8
+  of eckRgb:
+    e.extUnderlineColorGrid[base] = 2'u8
+    e.extUnderlineColorGrid[base + 1] = e.extUnderlineColorPen.r
+    e.extUnderlineColorGrid[base + 2] = e.extUnderlineColorPen.g
+    e.extUnderlineColorGrid[base + 3] = e.extUnderlineColorPen.b
+
+proc extUnderlineColorCellAt*(e: ExtendedState; row, col: int): ExtColor =
+  ## Per-cell extended-underline-color lookup. Returns the color pen
+  ## that was active when the cell was last stamped. Cells that have
+  ## never been touched (or stamped while the pen was at default)
+  ## return an `eckDefault` ExtColor.
+  if e.extUnderlineColorGrid.len == 0: return ExtColor(kind: eckDefault)
+  let rows = e.extUnderlineColorGridRows
+  let cols = e.extUnderlineColorGridCols
+  if rows <= 0 or cols <= 0: return ExtColor(kind: eckDefault)
+  if row < 0 or row >= rows or col < 0 or col >= cols:
+    return ExtColor(kind: eckDefault)
+  let base = (row * cols + col) * 4
+  case e.extUnderlineColorGrid[base]
+  of 1'u8:
+    ExtColor(kind: eckIndexed, idx: e.extUnderlineColorGrid[base + 1])
+  of 2'u8:
+    ExtColor(kind: eckRgb,
+             r: e.extUnderlineColorGrid[base + 1],
+             g: e.extUnderlineColorGrid[base + 2],
+             b: e.extUnderlineColorGrid[base + 3])
+  else:
+    ExtColor(kind: eckDefault)
 
 proc currentHyperlinkAt*(e: ExtendedState; row, col: int): uint32 =
   ## Cell-grid hyperlink lookup. The grid is populated when OSC 8

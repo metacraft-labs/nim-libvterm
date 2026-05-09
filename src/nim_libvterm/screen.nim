@@ -88,6 +88,10 @@ type
     underline*: UnderlineStyle
     extUnderline*: UnderlineStyle ## Set by the extended-state overlay when
                                   ## a CSI 4:N m sequence selected dotted/dashed.
+    underlineColor*: Color        ## CSI 58 / 59 underline color. `kind ==
+                                  ## ckDefault` means "use foreground"
+                                  ## (consumers can branch on
+                                  ## `cell.underlineColor.kind != ckDefault`).
     width*: int                   ## 0 (continuation), 1, or 2 (wide)
     hyperlinkId*: HyperlinkId     ## 0 if no active hyperlink
     imageRef*: ImageRef           ## 0 if cell is not part of an image
@@ -131,6 +135,20 @@ proc `==`*(a, b: HyperlinkId): bool {.borrow.}
 proc `==`*(a, b: ImageRef): bool {.borrow.}
 proc `$`*(h: HyperlinkId): string {.borrow.}
 proc `$`*(r: ImageRef): string {.borrow.}
+
+const colDefault* = Color(kind: ckDefault)
+  ## Sentinel "default color" -- equal to a freshly-zero-initialised
+  ## `Color` value. Consumers reading `Cell.underlineColor` can compare
+  ## against this to detect "no explicit underline color was set" (in
+  ## which case the underline should be drawn in the foreground colour
+  ## per the CSI 58/59 specification).
+
+proc `==`*(a, b: Color): bool =
+  if a.kind != b.kind: return false
+  case a.kind
+  of ckDefault: true
+  of ckIndexed: a.idx == b.idx
+  of ckRgb:     a.r == b.r and a.g == b.g and a.b == b.b
 
 # ---------------------------------------------------------------------------
 # Internal: callback thunks
@@ -360,8 +378,18 @@ proc parseCsiArgs(bytes: openArray[byte]; start: int): tuple[args: seq[clong], n
       sawDigit = true
       inc i
     elif b == 0x3B or b == 0x3A:  # ';' or ':'
+      # An empty slot (no digits before the separator) still
+      # belongs to the run when the separator is `:` -- e.g. the
+      # `::` in `CSI 58:2::R:G:B` is the (empty) colorspace token of
+      # the colon-run, not the end of it. We therefore tag empty
+      # colon-slots with MORE just like populated ones, so the
+      # downstream SGR walker doesn't split the run prematurely.
       let withMore = if b == 0x3A: cur or (clong(1) shl 31) else: cur
-      result.args.add (if sawDigit: withMore else: clong(0))
+      let payload =
+        if sawDigit: withMore
+        elif b == 0x3A: clong(0) or (clong(1) shl 31)
+        else: clong(0)
+      result.args.add payload
       cur = 0
       sawDigit = false
       inc i
@@ -416,6 +444,10 @@ proc stampExtUnderlineRange(inner: ptr ScreenInner;
   ## after. The rectangle wraps at the right margin: cells from c0 to
   ## the row's last column are filled on r0, then any full rows, then
   ## leading cells of r1 up to c1 - 1.
+  ##
+  ## Both the underline-style (`extUnderlineGrid`) and the underline-
+  ## color (`extUnderlineColorGrid`) overlays are stamped here -- they
+  ## share the same SGR run boundaries, so a single walk does both.
   let cols = inner.cols
   if cols <= 0: return
   if r0 == r1 and c0 == c1: return  # nothing emitted
@@ -432,6 +464,7 @@ proc stampExtUnderlineRange(inner: ptr ScreenInner;
     var c = col
     while c < endCol:
       stampExtUnderlineCell(inner.extended, row, c)
+      stampExtUnderlineColorCell(inner.extended, row, c)
       inc c
     if row >= r1: break
     inc row
@@ -451,10 +484,12 @@ proc feed*(s: var Screen; bytes: openArray[byte]) =
   ##
   ## The byte stream is walked in chunks delimited by SGR sequences. For
   ## each chunk we record libvterm's cursor before and after, then stamp
-  ## the per-cell extended-underline grid with the active pen. The grid
-  ## is the only way to recover dotted (CSI 4:4) / dashed (CSI 4:5)
-  ## styles because libvterm's 2-bit underline field cannot represent
-  ## them. Single / double / curly remain libvterm-tracked.
+  ## the per-cell extended-underline grid AND the per-cell underline-
+  ## color grid with the active pens. Those grids are the only way to
+  ## recover dotted (CSI 4:4) / dashed (CSI 4:5) styles and the colored-
+  ## underline state (CSI 58 / 59) because libvterm has no native
+  ## representation for either. Single / double / curly remain libvterm-
+  ## tracked.
   if s.inner == nil or bytes.len == 0: return
   let inner = s.inner
   let scr = vterm_obtain_screen(inner.vt)
@@ -565,6 +600,15 @@ proc cellAt*(s: Screen; row, col: int): Cell =
     of esuDashed: usDashed
   if result.extUnderline != usNone:
     result.underline = result.extUnderline
+  # Per-cell underline-color lookup -- libvterm has no awareness of CSI
+  # 58 / 59, so the color is tracked independently in the same chunked
+  # walker. `colDefault` (the natural zero-valued `Color`) means "no
+  # explicit underline color"; consumers fall back to the foreground.
+  let extCol = extUnderlineColorCellAt(s.inner.extended, row, col)
+  result.underlineColor = case extCol.kind
+    of eckDefault: colDefault
+    of eckIndexed: Color(kind: ckIndexed, idx: extCol.idx)
+    of eckRgb:     Color(kind: ckRgb, r: extCol.r, g: extCol.g, b: extCol.b)
 
 # ---------------------------------------------------------------------------
 # Bulk text queries
