@@ -38,6 +38,10 @@
 ## * `cast` is not used anywhere in this module.
 
 import std/[options, tables, strutils]
+import ./image_types
+import ./decoders/iterm2 as iterm2dec
+
+export image_types
 
 # ---------------------------------------------------------------------------
 # Public value types
@@ -53,28 +57,6 @@ type
     title*: string
     body*: string
     metadata*: string
-
-  ImageFormat* = enum
-    ## When pixel decoders are deferred, all decoded images carry
-    ## `ifPlaceholder` so callers can still discriminate.
-    ifPlaceholder, ifSixel, ifKitty, ifITerm2
-
-  Transparency* = enum
-    txOpaque, txTransparent
-
-  ImagePlacement* = object
-    row*, col*: int
-    width*, height*: int  ## In cells (0 = unspecified / pixel-only)
-
-  Image* = object
-    format*: ImageFormat
-    pixels*: seq[byte]   ## Decoded RGBA. Empty until decoders ship.
-    width*, height*: int  ## Pixels.
-    placement*: ImagePlacement
-    zIndex*: int
-    transparency*: Transparency
-    rawSize*: int        ## Bytes of the raw payload, useful for telemetry
-                         ## even when pixel decoding is deferred.
 
   ExtUnderlineState* = enum
     esuNone, esuDotted, esuDashed
@@ -303,12 +285,20 @@ proc dispatchOsc7(e: var ExtendedState; payload: string) =
 
 proc dispatchOsc1337(e: var ExtendedState; payload: string) =
   ## Recognise iTerm2 inline-image announcements (`File=...:...`). We
-  ## allocate an ImageRef but do not decode pixels yet. Other OSC 1337
-  ## payloads (set-mark, set-cursor-shape, etc.) are silently ignored.
+  ## attempt to decode the inner image; if decoding fails or the inner
+  ## format is deferred (PNG/JPEG/GIF) we still register the sighting
+  ## with `format = ifITerm2` and `pixels` empty, so consumers can
+  ## telemetrically observe the iTerm2 escape even when we can't paint
+  ## it. Other OSC 1337 payloads (set-mark, set-cursor-shape, etc.) are
+  ## silently ignored.
   if not payload.startsWith("File="): return
   let id = e.nextImageId
   inc e.nextImageId
-  var img = Image(format: ifITerm2, rawSize: payload.len)
+  var img: Image
+  try:
+    img = iterm2dec.decodeIterm2(payload)
+  except CatchableError:
+    img = Image(format: ifITerm2, rawSize: payload.len)
   e.imageTable[id] = img
 
 proc handleOsc*(e: var ExtendedState; command: int;
