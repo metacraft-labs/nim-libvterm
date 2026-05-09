@@ -54,8 +54,11 @@
               clang
               # Valgrind for the secondary leak-budget check.
               valgrind
-              # zlib (headers + lib) -- consumed by the PNG decoder via
-              # zlib_ffi.nim. The Justfile pushes -I/-L flags through
+              # zlib (headers + lib) -- the production PNG path uses
+              # stb_image which bundles its own inflater, but the test
+              # fixture helper `encodePng` in tests/test_helpers.nim
+              # still wraps libz to *deflate* generated PNG bytes. The
+              # Justfile pushes -I/-L flags through
               # NIM_LIBVTERM_ZLIB_{INCLUDE,LIB} so the build is hermetic.
               zlib
               zlib.dev

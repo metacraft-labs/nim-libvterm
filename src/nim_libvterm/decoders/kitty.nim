@@ -8,13 +8,14 @@
 ##   * f=32  -- raw 32-bit RGBA, base64-encoded (default)
 ##   * f=100 -- PNG bytes, base64-encoded
 ##
-## We decode all three. `f=100` dispatches to the pure-Nim PNG decoder in
-## `decoders/png.nim`. PNG carries its own width/height in IHDR, which is
-## the source of truth: when the Kitty `s=`/`v=` header parameters
-## disagree with IHDR (or are zero/unset, as is common when the sender
-## relies on the PNG header) we trust IHDR. `KittyDecodeDefer` remains in
-## the public API for backward compatibility but is no longer raised by
-## `decodeKittyRgba`.
+## We decode all three. `f=100` dispatches to the stb_image-backed PNG
+## decoder in `decoders/png.nim`. PNG carries its own width/height in
+## IHDR, which is the source of truth: when the Kitty `s=`/`v=` header
+## parameters disagree with IHDR (or are zero/unset, as is common when
+## the sender relies on the PNG header) we trust IHDR.
+## `KittyDecodeDefer` remains in the public API for backward
+## compatibility but is no longer raised by `decodeKittyRgba` -- with
+## stb_image every PNG that decodes is fully expanded to RGBA inline.
 ##
 ## Public-API rules: this module returns a value `Image` with `pixels`
 ## populated as RGBA row-major (4 bytes/pixel). It does NOT touch the
@@ -42,8 +43,8 @@ proc decodeKittyRgba*(payload: string; format: int;
   ## `s=` and `v=` parameters of the Kitty header.
   ##
   ## Returns an `Image` with `format = ifKitty` and `pixels` populated
-  ## RGBA row-major. Raises `KittyDecodeDefer` for `f=100` (PNG) and
-  ## `KittyDecodeError` for malformed input or unsupported formats.
+  ## RGBA row-major. Raises `KittyDecodeError` for malformed input or
+  ## unsupported formats.
   if format == 100:
     # PNG: ignore the s=/v= dimensions -- IHDR is the source of truth.
     # Kitty senders sometimes omit s=/v= entirely for f=100 because the

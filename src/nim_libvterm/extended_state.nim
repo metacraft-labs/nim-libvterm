@@ -454,13 +454,12 @@ proc dispatchKittyGraphics(e: var ExtendedState; payload: string;
   var img: Image
   try:
     img = kittydec.decodeKittyRgba(dataStr, format, width, height)
-  except kittydec.KittyDecodeDefer:
-    # PNG (f=100) needs zlib+CRC32. Register a placeholder with format
-    # metadata so callers can see the protocol and dimensions even
-    # though pixels stay empty.
-    img = Image(format: ifKitty, width: width, height: height,
-                rawSize: dataStr.len)
   except CatchableError:
+    # Decode failed -- register a placeholder with format metadata so
+    # callers can see the protocol and dimensions even though pixels
+    # stay empty. (`KittyDecodeDefer` is no longer raised by the
+    # stb_image-backed PNG path; `CatchableError` covers both
+    # `KittyDecodeError` and any future sibling exceptions.)
     img = Image(format: ifKitty, width: width, height: height,
                 rawSize: dataStr.len)
   registerImagePlacement(e, img, curRow, curCol)

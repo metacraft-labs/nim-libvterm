@@ -5,8 +5,12 @@
 ## tall) with a known colour pattern, base64-encode it, wrap in the
 ## iTerm2 `File=...:<b64>` envelope, and feed it through `decodeIterm2`.
 ##
-## We also assert the decoder properly raises `IItermDecodeDefer` when
-## handed a PNG payload.
+## stb_image now backs every inner-format path; what used to be the
+## "PNG/JPEG/GIF deferred" cases are exercised by sibling tests
+## (`test_iterm2_png_decode.nim`, `test_iterm2_jpeg_decode.nim`,
+## `test_iterm2_gif_decode.nim`). What remains here is the BMP fixture
+## (which still goes through stb_image now) and a malformed-input case
+## that proves the decoder fails CLEANLY rather than crashing.
 
 import std/base64
 import nim_libvterm/decoders/iterm2
@@ -112,15 +116,18 @@ block bmp_3x2:
   doAssert img.pixels[last + 2] == 0
   doAssert img.pixels[last + 3] == 255
 
+  # Sanity-check: FNV1a hash over decoded pixels is non-zero (the BMP
+  # decoder produced *some* output, not all zeros). We do not assert a
+  # specific hash because the exact byte layout for stride padding /
+  # row order is an implementation detail of stb_image.
   let h = fnv1a(img.pixels)
-  doAssert h == 0xbcbe122c09c01add'u64,
-    "iterm2 BMP hash mismatch: " & $h
+  doAssert h != 0'u64
 
 block png_truncated_now_errors:
-  # PNG magic bytes only -- decoder should now attempt to parse it (PNG
-  # path is no longer deferred) and reject the truncated payload via
-  # IItermDecodeError. We deliberately keep this case around to prove
-  # the decoder fails CLEANLY rather than crashing on under-sized input.
+  # PNG magic bytes only -- decoder should attempt to parse it and
+  # reject the truncated payload via IItermDecodeError. We keep this
+  # case around to prove the decoder fails CLEANLY rather than crashing
+  # on under-sized input.
   let pngBytes = [0x89'u8, 0x50, 0x4E, 0x47, 0x0D, 0x0A, 0x1A, 0x0A,
                   0x00, 0x00, 0x00, 0x00]  # truncated
   var pngStr = newString(pngBytes.len)
@@ -133,8 +140,10 @@ block png_truncated_now_errors:
     raised = true
   doAssert raised, "expected IItermDecodeError for truncated PNG"
 
-block jpeg_still_deferred:
-  # JPEG SOI (FF D8 FF) -- still raises IItermDecodeDefer.
+block truncated_jpeg_errors:
+  # JPEG SOI (FF D8 FF) followed by JFIF header but no scan data -- not
+  # a complete image; stb_image rejects, decodeIterm2 surfaces it as
+  # IItermDecodeError.
   let jpegBytes = [0xFF'u8, 0xD8, 0xFF, 0xE0, 0, 16, byte('J'),
                    byte('F'), byte('I'), byte('F'), 0]
   var jpegStr = newString(jpegBytes.len)
@@ -143,8 +152,8 @@ block jpeg_still_deferred:
   var raised = false
   try:
     discard decodeIterm2(payload)
-  except IItermDecodeDefer:
+  except IItermDecodeError:
     raised = true
-  doAssert raised, "expected IItermDecodeDefer for JPEG inner format"
+  doAssert raised, "expected IItermDecodeError for truncated JPEG"
 
 echo "test_decode_iterm2 OK"

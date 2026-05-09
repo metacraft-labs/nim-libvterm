@@ -18,14 +18,16 @@ src-paths := "--path:src --path:tests"
 # Hermetic + style checks -- applied to every nim invocation in this
 # file. The vendored libvterm has its own warnings on some compilers; we
 # add `-w` (suppress C warnings) to the C compile via `--passC` so they
-# don't drown the test logs. zlib (consumed by the PNG decoder via
-# `zlib_ffi.nim`) is located via NIM_LIBVTERM_ZLIB_{INCLUDE,LIB} which
-# the nix devShell exports; we forward those into the C compile + link.
+# don't drown the test logs. zlib is no longer used by the production
+# decoders (stb_image bundles its own inflater) but `tests/test_helpers.nim`
+# still wraps the system libz via `zlib_ffi.nim` to *encode* PNG fixtures
+# for the round-trip tests. We keep the include/link flags so test
+# binaries link cleanly.
 nim-flags := "--skipParentCfg --skipUserCfg --styleCheck:usages --styleCheck:error --passC:-w --passC:-I${NIM_LIBVTERM_ZLIB_INCLUDE:-/usr/include} --passL:-L${NIM_LIBVTERM_ZLIB_LIB:-/usr/lib}"
 
 # The ordered list of test files. Adding a new test_*.nim here gates it
 # on CI.
-tests := "tests/test_libvterm_basic_hello.nim tests/test_libvterm_csi_cursor_move.nim tests/test_libvterm_sgr_color_full_palette.nim tests/test_libvterm_resize_round_trip.nim tests/test_libvterm_alternate_screen.nim tests/test_osc7_cwd.nim tests/test_osc8_hyperlink.nim tests/test_osc9_notification.nim tests/test_dec_2026_synchronized_output.nim tests/test_csi_t_window_ops.nim tests/test_kitty_keyboard.nim tests/test_modify_other_keys.nim tests/test_mouse_protocol.nim tests/test_state_mirror_pull_after_push.nim tests/test_image_registry.nim tests/test_decode_kitty_rgba.nim tests/test_decode_sixel.nim tests/test_decode_iterm2.nim tests/test_decode_png_rgba.nim tests/test_decode_png_rgb.nim tests/test_decode_png_invalid.nim tests/test_dcs_sixel_ingest.nim tests/test_apc_kitty_ingest.nim tests/test_apc_kitty_png_defer.nim tests/test_kitty_png_ingest.nim tests/test_iterm2_png_decode.nim tests/test_api_invariants.nim tests/test_no_leaks.nim"
+tests := "tests/test_libvterm_basic_hello.nim tests/test_libvterm_csi_cursor_move.nim tests/test_libvterm_sgr_color_full_palette.nim tests/test_libvterm_resize_round_trip.nim tests/test_libvterm_alternate_screen.nim tests/test_osc7_cwd.nim tests/test_osc8_hyperlink.nim tests/test_osc9_notification.nim tests/test_dec_2026_synchronized_output.nim tests/test_csi_t_window_ops.nim tests/test_kitty_keyboard.nim tests/test_modify_other_keys.nim tests/test_mouse_protocol.nim tests/test_state_mirror_pull_after_push.nim tests/test_image_registry.nim tests/test_decode_kitty_rgba.nim tests/test_decode_sixel.nim tests/test_decode_iterm2.nim tests/test_decode_png_rgba.nim tests/test_decode_png_rgb.nim tests/test_decode_png_invalid.nim tests/test_decode_jpeg_rgba.nim tests/test_decode_gif_rgba.nim tests/test_dcs_sixel_ingest.nim tests/test_apc_kitty_ingest.nim tests/test_apc_kitty_png_defer.nim tests/test_kitty_png_ingest.nim tests/test_iterm2_png_decode.nim tests/test_iterm2_jpeg_decode.nim tests/test_iterm2_gif_decode.nim tests/test_api_invariants.nim tests/test_no_leaks.nim"
 
 # --- Default targets (per repo-requirements.md) ---
 
