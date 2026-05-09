@@ -6,15 +6,12 @@
 ##
 ## The trailing payload is base64-encoded bytes of an image. The iTerm2
 ## protocol deliberately does not restrict the inner format -- "PNG, GIF,
-## JPEG, or other format" -- so we are free to ship a BMP-capable
-## decoder that handles the canonical fixture format we use in tests.
-## PNG support requires zlib + CRC32 + IDAT reconstruction; that's a
-## ~600-LOC follow-up keyed on the team's appetite for vendoring or
-## adding a stdlib-zippy-equivalent. See the L2 milestone notes.
+## JPEG, or other format". We decode BMP and PNG inline; JPEG and GIF
+## still raise `IItermDecodeDefer`.
 ##
 ## Inner-format detection is by magic bytes:
 ##   * `BM`  (0x42 0x4D)         -> 24-bit uncompressed BMP (decoded)
-##   * `\x89PNG`                  -> raise IItermDecodeDefer
+##   * `\x89PNG`                  -> PNG decoder (decoded)
 ##   * `GIF8`                     -> raise IItermDecodeDefer
 ##   * `\xFF\xD8\xFF`             -> raise IItermDecodeDefer  (JPEG)
 ##   * everything else            -> raise IItermDecodeError
@@ -26,6 +23,7 @@
 
 import std/[base64, strutils]
 import ../image_types
+import ./png as pngdec
 export image_types
 
 type
@@ -150,8 +148,17 @@ proc decodeIterm2*(payload: string): Image =
     raise newException(IItermDecodeError, "iTerm2: empty image bytes")
   if raw.len >= 4:
     if byte(raw[0]) == 0x89'u8 and raw[1] == 'P' and raw[2] == 'N' and raw[3] == 'G':
-      raise newException(IItermDecodeDefer,
-        "iTerm2: PNG inner-format requires zlib+CRC32 -- deferred")
+      var rawBytes = newSeq[byte](raw.len)
+      for i in 0 ..< raw.len: rawBytes[i] = byte(raw[i])
+      var img: Image
+      try:
+        img = pngdec.decodePng(rawBytes)
+      except pngdec.PngDecodeError as e:
+        raise newException(IItermDecodeError,
+          "iTerm2/PNG decode failed: " & e.msg)
+      img.format = ifITerm2
+      img.rawSize = raw.len
+      return img
     if raw[0] == 'G' and raw[1] == 'I' and raw[2] == 'F' and raw[3] == '8':
       raise newException(IItermDecodeDefer,
         "iTerm2: GIF inner-format -- deferred")

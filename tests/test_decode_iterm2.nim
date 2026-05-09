@@ -116,18 +116,35 @@ block bmp_3x2:
   doAssert h == 0xbcbe122c09c01add'u64,
     "iterm2 BMP hash mismatch: " & $h
 
-block png_deferred:
-  # PNG magic bytes: 89 50 4E 47 0D 0A 1A 0A
+block png_truncated_now_errors:
+  # PNG magic bytes only -- decoder should now attempt to parse it (PNG
+  # path is no longer deferred) and reject the truncated payload via
+  # IItermDecodeError. We deliberately keep this case around to prove
+  # the decoder fails CLEANLY rather than crashing on under-sized input.
   let pngBytes = [0x89'u8, 0x50, 0x4E, 0x47, 0x0D, 0x0A, 0x1A, 0x0A,
-                  0x00, 0x00, 0x00, 0x00]  # truncated; we won't decode it
+                  0x00, 0x00, 0x00, 0x00]  # truncated
   var pngStr = newString(pngBytes.len)
   for i in 0 ..< pngBytes.len: pngStr[i] = char(pngBytes[i])
   let payload = "File=name=test.png;inline=1:" & base64.encode(pngStr)
   var raised = false
   try:
     discard decodeIterm2(payload)
+  except IItermDecodeError:
+    raised = true
+  doAssert raised, "expected IItermDecodeError for truncated PNG"
+
+block jpeg_still_deferred:
+  # JPEG SOI (FF D8 FF) -- still raises IItermDecodeDefer.
+  let jpegBytes = [0xFF'u8, 0xD8, 0xFF, 0xE0, 0, 16, byte('J'),
+                   byte('F'), byte('I'), byte('F'), 0]
+  var jpegStr = newString(jpegBytes.len)
+  for i in 0 ..< jpegBytes.len: jpegStr[i] = char(jpegBytes[i])
+  let payload = "File=name=test.jpg;inline=1:" & base64.encode(jpegStr)
+  var raised = false
+  try:
+    discard decodeIterm2(payload)
   except IItermDecodeDefer:
     raised = true
-  doAssert raised, "expected IItermDecodeDefer for PNG inner format"
+  doAssert raised, "expected IItermDecodeDefer for JPEG inner format"
 
 echo "test_decode_iterm2 OK"

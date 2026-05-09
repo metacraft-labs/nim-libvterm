@@ -102,12 +102,15 @@ block raw_rgb_f24:
   doAssert img.pixels[12] == 255 and img.pixels[13] == 255 and
            img.pixels[14] == 255 and img.pixels[15] == 255
 
-block deferred_png:
+block invalid_png_now_errors:
+  ## With the PNG decoder shipped, f=100 is no longer deferred. Garbage
+  ## payload now raises KittyDecodeError (via PngDecodeError) -- prove
+  ## that path stays clean rather than crashing.
   var raised = false
   try:
     discard decodeKittyRgba("AAAA", format = 100, width = 1, height = 1)
-  except KittyDecodeDefer:
+  except KittyDecodeError:
     raised = true
-  doAssert raised, "expected KittyDecodeDefer for f=100"
+  doAssert raised, "expected KittyDecodeError for invalid PNG"
 
 echo "test_decode_kitty_rgba OK"

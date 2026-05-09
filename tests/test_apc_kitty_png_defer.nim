@@ -1,48 +1,64 @@
 ## test_apc_kitty_png_defer.nim -- end-to-end APC ingestion test for the
 ## `f=100` (PNG) Kitty graphics path.
 ##
-## A real PNG decoder needs zlib + CRC32, which are deferred at L2. The
-## ingestion path must NOT crash when handed a PNG-format payload --
-## instead it must register a placeholder image with `format = ifKitty`
-## and width/height metadata preserved, with `pixels` empty so callers
-## can detect the deferred-decode case via `pixels.len == 0`.
+## Originally this test asserted that PNG payloads registered an empty-
+## pixels placeholder (the PNG decoder was deferred). With the pure-Nim
+## PNG decoder shipped, the same payload now produces a real, populated
+## Image -- this test guards that progression.
+##
+## We still feed a real PNG (built via `encodePng`) so the assertion
+## chain is end-to-end: APC parse -> base64 decode -> PNG decode ->
+## image registry.
 
 import std/base64
 import nim_libvterm
+import ./test_helpers
 
-block kitty_png_deferred_through_apc:
-  # PNG magic bytes (8) + a stub IHDR length so we have something to
-  # base64-encode. The decoder never inspects the bytes for f=100; it
-  # just raises `KittyDecodeDefer`.
-  let pngBytes = [0x89'u8, 0x50, 0x4E, 0x47, 0x0D, 0x0A, 0x1A, 0x0A,
-                  0x00, 0x00, 0x00, 0x0D]
-  var asStr = newString(pngBytes.len)
-  for i in 0 ..< pngBytes.len: asStr[i] = char(pngBytes[i])
-  let b64 = base64.encode(asStr)
+const W = 10
+const H = 5
+
+block kitty_png_decoded_through_apc:
+  # A 10x5 RGBA pattern: every pixel solid red, full alpha.
+  var raw = newSeq[byte](W * H * 4)
+  for i in 0 ..< W * H:
+    raw[i * 4 + 0] = 255
+    raw[i * 4 + 1] = 0
+    raw[i * 4 + 2] = 0
+    raw[i * 4 + 3] = 255
+  let pngBytes = encodePng(W, H, 6, raw)
+  var pngStr = newString(pngBytes.len)
+  for i in 0 ..< pngBytes.len: pngStr[i] = char(pngBytes[i])
+  let b64 = base64.encode(pngStr)
   let payload = "\x1b_Ga=T,f=100,s=10,v=5,i=42;" & b64 & "\x1b\\"
 
   var s = newScreen(10, 40)
   doAssert s.images().len == 0
 
-  # The critical assertion: this must not crash. The defer is caught
-  # inside `dispatchKittyGraphics` and a placeholder image is registered.
   s.feed(payload)
 
   let imgs = s.images()
-  doAssert imgs.len == 1, "expected one placeholder image, got " & $imgs.len
+  doAssert imgs.len == 1, "expected one image, got " & $imgs.len
 
   let img = s.imageData(imgs[0])
-  # Format is ifKitty (not ifPlaceholder) -- the protocol IS Kitty
-  # graphics; the *inner* format (PNG) is the deferred bit.
+  # Format is ifKitty -- the protocol IS Kitty graphics.
   doAssert img.format == ifKitty, "format=" & $img.format
-  # Pixel dimensions preserved from the s= / v= header so consumers can
-  # still allocate the right footprint.
-  doAssert img.width == 10
-  doAssert img.height == 5
-  # Pixels NOT decoded -- callers detect deferred decode via empty seq.
-  doAssert img.pixels.len == 0,
-    "pixels.len should be 0 for deferred PNG decode, got " &
-    $img.pixels.len
+  # PNG IHDR is the source of truth for dimensions; the s=/v= values
+  # match here so we assert the same numbers.
+  doAssert img.width == W, "width=" & $img.width
+  doAssert img.height == H, "height=" & $img.height
+  # PNG decoder ran -- pixels are populated.
+  doAssert img.pixels.len == W * H * 4,
+    "expected " & $(W * H * 4) & " RGBA bytes, got " & $img.pixels.len
+  # Spot-check the colour we encoded.
+  doAssert img.pixels[0] == 255
+  doAssert img.pixels[1] == 0
+  doAssert img.pixels[2] == 0
+  doAssert img.pixels[3] == 255
+  let lastOff = (W * H - 1) * 4
+  doAssert img.pixels[lastOff + 0] == 255
+  doAssert img.pixels[lastOff + 1] == 0
+  doAssert img.pixels[lastOff + 2] == 0
+  doAssert img.pixels[lastOff + 3] == 255
   # rawSize records the raw payload length for telemetry.
   doAssert img.rawSize > 0
 

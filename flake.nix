@@ -54,9 +54,16 @@
               clang
               # Valgrind for the secondary leak-budget check.
               valgrind
+              # zlib (headers + lib) -- consumed by the PNG decoder via
+              # zlib_ffi.nim. The Justfile pushes -I/-L flags through
+              # NIM_LIBVTERM_ZLIB_{INCLUDE,LIB} so the build is hermetic.
+              zlib
+              zlib.dev
             ];
             shellHook = ''
               ${preCommit.shellHook}
+              export NIM_LIBVTERM_ZLIB_INCLUDE="${pkgs.zlib.dev}/include"
+              export NIM_LIBVTERM_ZLIB_LIB="${pkgs.zlib}/lib"
               echo "nim-libvterm dev shell -- nim $(nim --version 2>&1 | head -1)"
             '';
           };

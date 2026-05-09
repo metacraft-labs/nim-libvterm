@@ -6,12 +6,15 @@
 ##
 ##   * f=24  -- raw 24-bit RGB, base64-encoded
 ##   * f=32  -- raw 32-bit RGBA, base64-encoded (default)
-##   * f=100 -- PNG bytes, base64-encoded (deferred -- needs zlib+CRC)
+##   * f=100 -- PNG bytes, base64-encoded
 ##
-## We decode the raw forms here (they are what test fixtures use and what
-## TUI authors with "no PNG, just blit pixels" workflows tend to ship).
-## PNG support raises a `KittyDecodeDefer` -- callers can detect this and
-## either fall back or surface the error to the user.
+## We decode all three. `f=100` dispatches to the pure-Nim PNG decoder in
+## `decoders/png.nim`. PNG carries its own width/height in IHDR, which is
+## the source of truth: when the Kitty `s=`/`v=` header parameters
+## disagree with IHDR (or are zero/unset, as is common when the sender
+## relies on the PNG header) we trust IHDR. `KittyDecodeDefer` remains in
+## the public API for backward compatibility but is no longer raised by
+## `decodeKittyRgba`.
 ##
 ## Public-API rules: this module returns a value `Image` with `pixels`
 ## populated as RGBA row-major (4 bytes/pixel). It does NOT touch the
@@ -19,14 +22,16 @@
 
 import std/base64
 import ../image_types
+import ./png as pngdec
 export image_types
 
 type
   KittyDecodeError* = object of CatchableError
   KittyDecodeDefer* = object of CatchableError
-    ## Raised for `f=100` (PNG) -- a real PNG decoder needs zlib + CRC32
-    ## which exceed the stdlib budget. Callers can catch this and either
-    ## fall back to an empty `Image` or attempt to decode externally.
+    ## Historically raised for `f=100` (PNG). Retained in the public API
+    ## so callers that still `except KittyDecodeDefer` keep compiling --
+    ## the new PNG path raises `KittyDecodeError` (wrapping
+    ## `PngDecodeError`) on malformed PNGs instead.
 
 proc decodeKittyRgba*(payload: string; format: int;
                       width, height: int): Image =
@@ -40,8 +45,21 @@ proc decodeKittyRgba*(payload: string; format: int;
   ## RGBA row-major. Raises `KittyDecodeDefer` for `f=100` (PNG) and
   ## `KittyDecodeError` for malformed input or unsupported formats.
   if format == 100:
-    raise newException(KittyDecodeDefer,
-      "Kitty f=100 (PNG) decoding requires zlib+CRC32 -- deferred")
+    # PNG: ignore the s=/v= dimensions -- IHDR is the source of truth.
+    # Kitty senders sometimes omit s=/v= entirely for f=100 because the
+    # PNG header carries the same information.
+    let raw = base64.decode(payload)
+    var rawBytes = newSeq[byte](raw.len)
+    for i in 0 ..< raw.len: rawBytes[i] = byte(raw[i])
+    var img: Image
+    try:
+      img = pngdec.decodePng(rawBytes)
+    except pngdec.PngDecodeError as e:
+      raise newException(KittyDecodeError,
+        "Kitty f=100 (PNG) decode failed: " & e.msg)
+    img.format = ifKitty
+    img.rawSize = payload.len
+    return img
   if format != 24 and format != 32:
     raise newException(KittyDecodeError,
       "Kitty graphics: unsupported format f=" & $format)
