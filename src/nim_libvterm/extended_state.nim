@@ -40,6 +40,8 @@
 import std/[options, tables, strutils]
 import ./image_types
 import ./decoders/iterm2 as iterm2dec
+import ./decoders/sixel as sixeldec
+import ./decoders/kitty as kittydec
 
 export image_types
 
@@ -134,6 +136,22 @@ type
 
     # OSC 1337 (iTerm2) buffer
     osc1337Buf: string
+
+    # DCS (Sixel) ingestion buffer + final-byte capture from the DCS
+    # command bytes. libvterm's `dcs` callback receives the command-byte
+    # run (everything between `\x1bP` and the final byte INCLUSIVE) plus
+    # the data fragments separately. We buffer the data until `final`,
+    # then route by `dcsFinalByte`.
+    dcsBuf: string
+    dcsFinalByte: char
+    dcsActive: bool
+
+    # APC (Kitty graphics) ingestion buffer. Kitty graphics announces via
+    # `\x1b_G<header>;<data>\x1b\\`; the APC payload is the entire
+    # `G<header>;<data>` run. We buffer fragments until `final`, then
+    # decode + register.
+    apcBuf: string
+    apcActive: bool
 
 # ---------------------------------------------------------------------------
 # Lifetime
@@ -300,6 +318,169 @@ proc dispatchOsc1337(e: var ExtendedState; payload: string) =
   except CatchableError:
     img = Image(format: ifITerm2, rawSize: payload.len)
   e.imageTable[id] = img
+
+# ---------------------------------------------------------------------------
+# Image-footprint helpers
+# ---------------------------------------------------------------------------
+#
+# Image protocols announce a pixel-size image; we record cell-grid
+# placement so callers can paint the cells covered. Lacking real font
+# metrics at L2, we use a conventional 8×16 px cell (the same default
+# the xterm/foot/wezterm consoles use as a sensible mid-DPI baseline).
+
+const cellWidthPx = 8
+const cellHeightPx = 16
+
+proc imageFootprint(widthPx, heightPx: int): tuple[cols, rows: int] =
+  ## ceil-divide into cells. Pixel-only images (0×0) collapse to one
+  ## cell so the registry still gets a placement.
+  let w = if widthPx <= 0: 0 else: (widthPx + cellWidthPx - 1) div cellWidthPx
+  let h = if heightPx <= 0: 0 else: (heightPx + cellHeightPx - 1) div cellHeightPx
+  (max(w, 1), max(h, 1))
+
+proc registerImagePlacement(e: var ExtendedState; img: var Image;
+                            curRow, curCol: int) =
+  ## Stamp `img.placement` from the cursor + computed cell footprint and
+  ## paint the image-grid so `imageAt(row, col)` returns the right ref.
+  ## Caller must have set `img.format`, `img.width`, `img.height` before
+  ## calling. Returns the freshly-allocated image id (also written into
+  ## the registry) via the imageTable side-effect.
+  let id = e.nextImageId
+  inc e.nextImageId
+  let foot = imageFootprint(img.width, img.height)
+  img.placement = ImagePlacement(row: curRow, col: curCol,
+                                 width: foot.cols, height: foot.rows)
+  e.imageTable[id] = img
+  if e.imageGrid.len == 0: return
+  let rows = e.imageGridRows
+  let cols = e.imageGridCols
+  if rows <= 0 or cols <= 0: return
+  for r in curRow ..< min(curRow + foot.rows, rows):
+    for c in curCol ..< min(curCol + foot.cols, cols):
+      if r >= 0 and c >= 0:
+        e.imageGrid[r * cols + c] = id
+
+# ---------------------------------------------------------------------------
+# DCS (Sixel) handling
+# ---------------------------------------------------------------------------
+#
+# `\x1bP <params> q <data> \x1b\\`. libvterm's `dcs` fallback fires with
+#   * `command` = the bytes between `\x1bP` and the final byte INCLUSIVE,
+#     so for sixel it always ends with `'q'`.
+#   * `frag` = chunks of `<data>`; `final=true` on the last chunk.
+# We buffer `<data>` and route on the captured final byte.
+
+proc dispatchSixel(e: var ExtendedState; payload: string;
+                   curRow, curCol: int) =
+  var img: Image
+  try:
+    img = sixeldec.decodeSixel(payload)
+  except CatchableError:
+    img = Image(format: ifSixel, rawSize: payload.len)
+  registerImagePlacement(e, img, curRow, curCol)
+
+proc handleDcs*(e: var ExtendedState; command: cstring; commandlen: int;
+                str: cstring; nbytes: int;
+                initial, final: bool;
+                curRow, curCol: int) =
+  ## Called from screen.nim's DCS state-fallback thunk. Buffers data
+  ## fragments until `final` and routes by the DCS final byte.
+  if initial:
+    e.dcsBuf.setLen(0)
+    e.dcsActive = true
+    e.dcsFinalByte = '\0'
+    if commandlen > 0 and command != nil:
+      # Final byte is the last char of `command`.
+      e.dcsFinalByte = char(cast[ptr UncheckedArray[byte]](command)[commandlen - 1])
+  if nbytes > 0 and str != nil:
+    let oldLen = e.dcsBuf.len
+    e.dcsBuf.setLen(oldLen + nbytes)
+    copyMem(e.dcsBuf[oldLen].addr, str, nbytes)
+  if final:
+    if e.dcsActive and e.dcsFinalByte == 'q':
+      dispatchSixel(e, e.dcsBuf, curRow, curCol)
+    e.dcsBuf.setLen(0)
+    e.dcsActive = false
+    e.dcsFinalByte = '\0'
+
+# ---------------------------------------------------------------------------
+# APC (Kitty graphics) handling
+# ---------------------------------------------------------------------------
+#
+# `\x1b_G<key>=<value>,<key>=<value>,...;<base64-payload>\x1b\\`.
+# We buffer the entire APC payload and parse on `final`.
+
+proc parseKittyHeader(header: string): Table[string, string] =
+  ## Header is a comma-separated `key=value` list (no spaces).
+  result = initTable[string, string]()
+  var i = 0
+  while i < header.len:
+    var j = i
+    while j < header.len and header[j] != '=':
+      inc j
+    if j >= header.len: break
+    let key = header[i ..< j]
+    inc j
+    var k = j
+    while k < header.len and header[k] != ',':
+      inc k
+    let val = header[j ..< k]
+    result[key] = val
+    i = k + 1
+
+proc kittyHeaderInt(header: Table[string, string]; key: string;
+                    default: int): int =
+  if not header.hasKey(key): return default
+  try: parseInt(header[key]) except CatchableError: default
+
+proc dispatchKittyGraphics(e: var ExtendedState; payload: string;
+                           curRow, curCol: int) =
+  ## Kitty graphics APC payload format:
+  ##   `G<header>;<data>`
+  ## We've already stripped the leading `G`. `<header>` is the
+  ## comma-separated key=value run; `<data>` is the base64 image bytes.
+  let semi = payload.find(';')
+  let headerStr = if semi < 0: payload else: payload[0 ..< semi]
+  let dataStr = if semi < 0: "" else: payload[semi + 1 .. ^1]
+  let header = parseKittyHeader(headerStr)
+  let action = if header.hasKey("a"): header["a"] else: "T"
+  # We only care about transmit-and-display ("T") and bare transmit
+  # ("t"). Delete ("d"), query ("q"), animation frames -- ignored.
+  if action != "T" and action != "t" and action != "":
+    return
+  let format = kittyHeaderInt(header, "f", 32)
+  let width = kittyHeaderInt(header, "s", 0)
+  let height = kittyHeaderInt(header, "v", 0)
+  var img: Image
+  try:
+    img = kittydec.decodeKittyRgba(dataStr, format, width, height)
+  except kittydec.KittyDecodeDefer:
+    # PNG (f=100) needs zlib+CRC32. Register a placeholder with format
+    # metadata so callers can see the protocol and dimensions even
+    # though pixels stay empty.
+    img = Image(format: ifKitty, width: width, height: height,
+                rawSize: dataStr.len)
+  except CatchableError:
+    img = Image(format: ifKitty, width: width, height: height,
+                rawSize: dataStr.len)
+  registerImagePlacement(e, img, curRow, curCol)
+
+proc handleApc*(e: var ExtendedState; str: cstring; nbytes: int;
+                initial, final: bool;
+                curRow, curCol: int) =
+  ## Called from screen.nim's APC state-fallback thunk.
+  if initial:
+    e.apcBuf.setLen(0)
+    e.apcActive = true
+  if nbytes > 0 and str != nil:
+    let oldLen = e.apcBuf.len
+    e.apcBuf.setLen(oldLen + nbytes)
+    copyMem(e.apcBuf[oldLen].addr, str, nbytes)
+  if final:
+    if e.apcActive and e.apcBuf.len > 0 and e.apcBuf[0] == 'G':
+      dispatchKittyGraphics(e, e.apcBuf[1 .. ^1], curRow, curCol)
+    e.apcBuf.setLen(0)
+    e.apcActive = false
 
 proc handleOsc*(e: var ExtendedState; command: int;
                 str: cstring; nbytes: int;

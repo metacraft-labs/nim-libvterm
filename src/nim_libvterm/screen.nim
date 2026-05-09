@@ -208,6 +208,35 @@ proc fallbackOscThunk(command: cint; frag: VTermStringFragment;
             int(pos.row), int(pos.col))
   result = 1
 
+proc fallbackDcsThunk(command: cstring; commandlen: csize_t;
+                      frag: VTermStringFragment;
+                      user: pointer): cint {.cdecl.} =
+  ## State-layer DCS fallback. libvterm itself only consumes
+  ## `\x1bP$q...` (status-string queries); every other DCS -- including
+  ## Sixel (final byte `q`) -- is routed here.
+  let inner = innerOf(user)
+  var pos: VTermPos
+  let state = vterm_obtain_state(inner.vt)
+  vterm_state_get_cursorpos(state, addr pos)
+  handleDcs(inner.extended, command, int(commandlen),
+            frag.str, fragLen(frag),
+            fragInitial(frag), fragFinal(frag),
+            int(pos.row), int(pos.col))
+  result = 1
+
+proc fallbackApcThunk(frag: VTermStringFragment;
+                      user: pointer): cint {.cdecl.} =
+  ## State-layer APC fallback. libvterm has no APC handlers itself;
+  ## every APC reaches us. We use it for Kitty graphics (leading `G`).
+  let inner = innerOf(user)
+  var pos: VTermPos
+  let state = vterm_obtain_state(inner.vt)
+  vterm_state_get_cursorpos(state, addr pos)
+  handleApc(inner.extended, frag.str, fragLen(frag),
+            fragInitial(frag), fragFinal(frag),
+            int(pos.row), int(pos.col))
+  result = 1
+
 # NB: A symmetric `fallbackCsiThunk` would let us catch the CSI sequences
 # libvterm's state layer can't parse, but we instead pre-scan the byte
 # stream in `feed()` so we also cover the DEC private modes that
@@ -288,11 +317,14 @@ proc newScreen*(rows, cols: int): Screen =
   vterm_screen_set_callbacks(scr, addr inner.screenCallbacks, inner)
 
   # State-layer fallbacks: we receive every OSC libvterm doesn't itself
-  # handle (OSC 7, 8, 9, 99, 1337, ...). CSI fallback is intentionally
-  # unwired -- the byte-stream pre-scanner in `feed()` covers our
-  # extended CSI repertoire (including DEC private modes that libvterm
-  # silently consumes without invoking any callback at all).
+  # handle (OSC 7, 8, 9, 99, 1337, ...) plus DCS (Sixel) and APC (Kitty
+  # graphics). CSI fallback is intentionally unwired -- the byte-stream
+  # pre-scanner in `feed()` covers our extended CSI repertoire (including
+  # DEC private modes that libvterm silently consumes without invoking
+  # any callback at all).
   inner.stateFallbacks.osc = fallbackOscThunk
+  inner.stateFallbacks.dcs = fallbackDcsThunk
+  inner.stateFallbacks.apc = fallbackApcThunk
   vterm_state_set_unrecognised_fallbacks(state, addr inner.stateFallbacks, inner)
 
   result = Screen(inner: inner)
