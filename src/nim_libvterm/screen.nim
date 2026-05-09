@@ -339,6 +339,7 @@ proc resize*(s: var Screen; rows, cols: int) =
   vterm_set_size(s.inner.vt, rows.cint, cols.cint)
   s.inner.rows = rows
   s.inner.cols = cols
+  resizeGrids(s.inner.extended, rows, cols)
 
 # ---------------------------------------------------------------------------
 # Feeding bytes
@@ -370,69 +371,137 @@ proc parseCsiArgs(bytes: openArray[byte]; start: int): tuple[args: seq[clong], n
     result.args.add cur
   result.next = i
 
-proc prescanCsi(inner: ptr ScreenInner; bytes: openArray[byte]) =
-  ## Pre-scan the byte stream for ANSI/CSI sequences that libvterm's state
-  ## machine silently consumes (or drops) without invoking the state-layer
-  ## fallback path. This includes:
+proc parseOneCsi(bytes: openArray[byte]; start: int):
+    tuple[ok: bool; leader: char; args: seq[clong]; final: char; next: int] =
+  ## Parse a single CSI starting at `bytes[start]` (which must be ESC `[`).
+  ## On success, returns the parsed components and the byte index past
+  ## the final byte. Returns `ok = false` if the CSI is incomplete (for
+  ## example, the terminator falls past `bytes.len`).
+  result.ok = false
+  if start + 1 >= bytes.len: return
+  if bytes[start] != 0x1B or bytes[start + 1] != 0x5B: return
+  var j = start + 2
+  if j >= bytes.len: return
+  # Optional leader byte: ?, >, =, <
+  if j < bytes.len and bytes[j] in {0x3F.byte, 0x3E.byte, 0x3D.byte, 0x3C.byte}:
+    result.leader = char(bytes[j])
+    inc j
+  # Parse args
+  let parsed = parseCsiArgs(bytes, j)
+  result.args = parsed.args
+  j = parsed.next
+  # Optional intermed bytes (we don't store them but skip)
+  while j < bytes.len and bytes[j] >= 0x20 and bytes[j] <= 0x2F:
+    inc j
+  if j >= bytes.len: return
+  result.final = char(bytes[j])
+  inc j
+  result.next = j
+  result.ok = true
+
+proc cursorRowCol(inner: ptr ScreenInner): tuple[row, col: int] =
+  ## Read libvterm's current cursor position. Used by the chunked feed
+  ## walker to decide which cells were touched by a fixed-pen run.
+  var pos: VTermPos
+  let state = vterm_obtain_state(inner.vt)
+  vterm_state_get_cursorpos(state, addr pos)
+  (int(pos.row), int(pos.col))
+
+proc stampExtUnderlineRange(inner: ptr ScreenInner;
+                            r0, c0, r1, c1: int) =
+  ## Stamp every cell in the half-open rectangle starting at (r0, c0)
+  ## inclusive and ending at (r1, c1) exclusive, walking row-major. Used
+  ## by the chunked feed walker after libvterm has consumed a fixed-pen
+  ## run -- (r0, c0) is the cursor before the run, (r1, c1) the cursor
+  ## after. The rectangle wraps at the right margin: cells from c0 to
+  ## the row's last column are filled on r0, then any full rows, then
+  ## leading cells of r1 up to c1 - 1.
+  let cols = inner.cols
+  if cols <= 0: return
+  if r0 == r1 and c0 == c1: return  # nothing emitted
+  if r0 < 0 or r0 >= inner.rows: return
+  var row = r0
+  var col = c0
+  # Guard against arbitrarily large iterations -- libvterm clamps cursor
+  # to the screen, but a defensive cap avoids infinite loops if the
+  # snapshot disagreed with our local view.
+  var safety = inner.rows * cols + cols
+  while safety > 0:
+    dec safety
+    let endCol = if row == r1: c1 else: cols
+    var c = col
+    while c < endCol:
+      stampExtUnderlineCell(inner.extended, row, c)
+      inc c
+    if row >= r1: break
+    inc row
+    if row >= inner.rows: break
+    col = 0
+
+proc feedRaw(inner: ptr ScreenInner; bytes: openArray[byte]; lo, hi: int) =
+  ## Feed `bytes[lo ..< hi]` to libvterm without prescan / chunking.
+  if hi <= lo: return
+  let p = cast[cstring](unsafeAddr bytes[lo])
+  # NB: `cast[cstring]` at the FFI boundary -- same charter justification
+  # as the parent `feed`.
+  discard vterm_input_write(inner.vt, p, csize_t(hi - lo))
+
+proc feed*(s: var Screen; bytes: openArray[byte]) =
+  ## Feed UTF-8 / ANSI bytes from the child process into the parser.
   ##
-  ## * DEC private modes 2026 / 1016 / 1015 / 1006 / 1005 (sync output,
-  ##   pixel-position mouse, SGR/URXVT/UTF8 mouse) -- libvterm's
-  ##   `set_dec_mode` returns without invoking fallbacks.
-  ## * Kitty keyboard `CSI = Pn u` / `CSI < Pn u` (push) -- libvterm's
-  ##   `on_csi` returns 0 immediately at the leader-byte sanity check.
-  ## * Kitty keyboard `CSI > Pn u` (pop / set) -- this DOES reach the
-  ##   state fallback but we co-opt it here for symmetry.
-  ## * Modify-other-keys `CSI > 4 ; Pn m` -- reaches state fallback; we
-  ##   co-opt here.
-  ## * CSI t (window manipulation) -- libvterm's state machine consumes
-  ##   most CSI t variants for its own queries; pre-scan captures the
-  ##   request irrespective.
-  ##
-  ## libvterm still sees the same byte stream so its own state stays
-  ## consistent; we are observing, not blocking.
-  ##
-  ## Partial-CSI handling: if a CSI begins in this chunk but its terminator
-  ## is in the next chunk, we lose the update. Production callers do not
-  ## generally split control sequences mid-byte; the test suite feeds
-  ## complete sequences. The fuzzer / fragment-stress test (M2 follow-up)
-  ## will validate this assumption.
+  ## The byte stream is walked in chunks delimited by SGR sequences. For
+  ## each chunk we record libvterm's cursor before and after, then stamp
+  ## the per-cell extended-underline grid with the active pen. The grid
+  ## is the only way to recover dotted (CSI 4:4) / dashed (CSI 4:5)
+  ## styles because libvterm's 2-bit underline field cannot represent
+  ## them. Single / double / curly remain libvterm-tracked.
+  if s.inner == nil or bytes.len == 0: return
+  let inner = s.inner
+  let scr = vterm_obtain_screen(inner.vt)
+  # Walk the byte stream once, dispatching SGR-pen updates between
+  # text-bearing chunks. Other CSIs (DEC modes, mouse, kitty kbd, etc.)
+  # are still pre-scanned -- we just dispatch them to the extended-state
+  # handler at the same boundary point so the prescan side-effects
+  # remain in lockstep with the libvterm-side effects.
+  var lo = 0
   var i = 0
+  var prevCursor = cursorRowCol(inner)
   while i + 1 < bytes.len:
     if bytes[i] != 0x1B or bytes[i + 1] != 0x5B:  # not ESC [
       inc i
       continue
-    var j = i + 2
-    if j >= bytes.len: break
-    # Optional leader byte: ?, >, =, <
-    var leader: char = '\0'
-    if j < bytes.len and bytes[j] in {0x3F.byte, 0x3E.byte, 0x3D.byte, 0x3C.byte}:
-      leader = char(bytes[j])
-      inc j
-    # Parse args
-    let parsed = parseCsiArgs(bytes, j)
-    let args = parsed.args
-    j = parsed.next
-    # Optional intermed bytes (we don't store them but skip)
-    while j < bytes.len and bytes[j] >= 0x20 and bytes[j] <= 0x2F:
-      inc j
-    if j >= bytes.len: break
-    let final = char(bytes[j])
-    inc j
-    # Dispatch to extended-state handler.
-    let leaderStr = if leader == '\0': "" else: $leader
-    handleCsi(inner.extended, leaderStr, args, "", final)
-    i = j
-
-proc feed*(s: var Screen; bytes: openArray[byte]) =
-  ## Feed UTF-8 / ANSI bytes from the child process into the parser.
-  if s.inner == nil or bytes.len == 0: return
-  prescanCsi(s.inner, bytes)
-  let p = cast[cstring](unsafeAddr bytes[0])
-  # NB: `cast[cstring]` is at the FFI boundary -- charter §3 permits raw
-  # casting INTERNALLY where it is unavoidable. The public seam takes
-  # `openArray[byte]`, so callers cannot end up with stray pointers.
-  discard vterm_input_write(s.inner.vt, p, csize_t(bytes.len))
-  let scr = vterm_obtain_screen(s.inner.vt)
+    let p = parseOneCsi(bytes, i)
+    if not p.ok: break
+    # We split the stream at every CSI we care about. SGR (`m`) updates
+    # the pen; other CSIs go to the extended-state handler unchanged.
+    # Everything between `lo` and `i` plus the CSI itself is fed to
+    # libvterm together: we want libvterm to consume the SGR before we
+    # snapshot the post-cursor for the run that follows.
+    let leaderStr = if p.leader == '\0': "" else: $p.leader
+    if leaderStr == "" and p.final == 'm':
+      # Snapshot cursor BEFORE feeding the upcoming bytes-up-to-CSI run,
+      # then feed the run + the SGR itself, then update our pen so the
+      # next run's stamping picks up the new pen value.
+      feedRaw(inner, bytes, lo, p.next)
+      let post = cursorRowCol(inner)
+      stampExtUnderlineRange(inner, prevCursor.row, prevCursor.col,
+                             post.row, post.col)
+      handleCsi(inner.extended, leaderStr, p.args, "", p.final)
+      lo = p.next
+      prevCursor = post
+    else:
+      # Non-SGR CSI -- still dispatch to extended-state, but no
+      # pen-flush boundary. The bytes flow through with the rest of the
+      # current run.
+      handleCsi(inner.extended, leaderStr, p.args, "", p.final)
+    i = p.next
+  # Tail: feed everything after the last SGR (or the whole stream if no
+  # SGRs were present) and stamp the resulting cursor advance.
+  if lo < bytes.len:
+    feedRaw(inner, bytes, lo, bytes.len)
+    let post = cursorRowCol(inner)
+    stampExtUnderlineRange(inner, prevCursor.row, prevCursor.col,
+                           post.row, post.col)
   vterm_screen_flush_damage(scr)
 
 proc feed*(s: var Screen; text: string) {.inline.} =
@@ -483,10 +552,19 @@ proc cellAt*(s: Screen; row, col: int): Cell =
   # Extended-state overlay layers
   result.hyperlinkId = HyperlinkId(uint32(currentHyperlinkAt(s.inner.extended, row, col)))
   result.imageRef = ImageRef(uint32(imageRefAt(s.inner.extended, row, col)))
-  result.extUnderline = case extUnderlineAt(s.inner.extended)
+  # Per-cell extended-underline lookup -- libvterm's `attrUnderline` only
+  # exposes 0..3 (none/single/double/curly), so dotted (CSI 4:4) and
+  # dashed (CSI 4:5) come from the per-cell grid the chunked feed walker
+  # maintains. If a cell has both a libvterm-tracked underline AND an
+  # ext-underline (which can't happen for the same SGR run -- 4:N maps to
+  # exactly one style), `extUnderline` takes precedence so consumers see
+  # the modern style.
+  result.extUnderline = case extUnderlineCellAt(s.inner.extended, row, col)
     of esuNone: usNone
     of esuDotted: usDotted
     of esuDashed: usDashed
+  if result.extUnderline != usNone:
+    result.underline = result.extUnderline
 
 # ---------------------------------------------------------------------------
 # Bulk text queries

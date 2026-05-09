@@ -92,6 +92,18 @@ type
     mouseProto: MouseProtocol
     windowOpLog: seq[WindowOp]
 
+    # Per-cell extended-underline grid. libvterm's 2-bit underline field
+    # natively covers off / single / double / curly (CSI 4 / 4:0 / 4:1 /
+    # 4:2 / 4:3) -- we read those back via `attrUnderline` in `cellAt`.
+    # The 4:4 (dotted) and 4:5 (dashed) codes are NOT in libvterm's
+    # 2-bit field, so we track them in this grid: stamped cell-by-cell
+    # by `screen.nim`'s `feed()` chunked walker, which queries
+    # libvterm's cursor before and after each text run and paints the
+    # touched cells with the current `extUnderlinePen`.
+    extUnderlineGridRows: int
+    extUnderlineGridCols: int
+    extUnderlineGrid: seq[uint8]
+
     # OSC 8 hyperlink table
     hyperlinkTable: Table[uint32, Hyperlink]
     nextHyperlinkId: uint32
@@ -669,6 +681,43 @@ proc handleCsi*(e: var ExtendedState; leader: string;
 proc resizeGrids*(e: var ExtendedState; rows, cols: int) =
   ensureGrid(e.hyperGrid, e.hyperGridRows, e.hyperGridCols, rows, cols)
   ensureGrid(e.imageGrid, e.imageGridRows, e.imageGridCols, rows, cols)
+  # Extended-underline grid: same shape, but stores ExtUnderlineState as
+  # a uint8 (0=esuNone, 1=esuDotted, 2=esuDashed) so the grid is a
+  # contiguous byte buffer.
+  if e.extUnderlineGridRows != rows or e.extUnderlineGridCols != cols or
+     e.extUnderlineGrid.len != rows * cols:
+    e.extUnderlineGridRows = rows
+    e.extUnderlineGridCols = cols
+    e.extUnderlineGrid = newSeq[uint8](rows * cols)
+
+proc stampExtUnderlineCell*(e: var ExtendedState; row, col: int) =
+  ## Stamp one cell of the extended-underline grid with the current pen.
+  ## Called by screen.nim's chunked feed walker for each cell touched by
+  ## a glyph emission within a fixed-pen run.
+  if e.extUnderlineGrid.len == 0: return
+  let rows = e.extUnderlineGridRows
+  let cols = e.extUnderlineGridCols
+  if rows <= 0 or cols <= 0: return
+  if row < 0 or row >= rows or col < 0 or col >= cols: return
+  let v = case e.extUnderlinePen
+    of esuNone:   0'u8
+    of esuDotted: 1'u8
+    of esuDashed: 2'u8
+  e.extUnderlineGrid[row * cols + col] = v
+
+proc extUnderlineCellAt*(e: ExtendedState; row, col: int): ExtUnderlineState =
+  ## Per-cell extended-underline lookup. Returns the pen value that was
+  ## active when the cell was last stamped by the chunked feed walker.
+  ## Cells that have never been touched return `esuNone`.
+  if e.extUnderlineGrid.len == 0: return esuNone
+  let rows = e.extUnderlineGridRows
+  let cols = e.extUnderlineGridCols
+  if rows <= 0 or cols <= 0: return esuNone
+  if row < 0 or row >= rows or col < 0 or col >= cols: return esuNone
+  case e.extUnderlineGrid[row * cols + col]
+  of 1'u8: esuDotted
+  of 2'u8: esuDashed
+  else:    esuNone
 
 proc currentHyperlinkAt*(e: ExtendedState; row, col: int): uint32 =
   ## Cell-grid hyperlink lookup. The grid is populated when OSC 8
