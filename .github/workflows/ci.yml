@@ -7,8 +7,12 @@ on:
 
 jobs:
   lint:
-    name: Lint
-    runs-on: ubuntu-latest
+    name: Lint (${{ matrix.runner }})
+    strategy:
+      fail-fast: false
+      matrix:
+        runner: [incus, tart-linux-arm, macos-tart]
+    runs-on: ${{ matrix.runner }}
     steps:
       - uses: actions/checkout@v4
       - name: Setup Nix
@@ -21,15 +25,19 @@ jobs:
       - if: always()
         uses: actions/upload-artifact@v4
         with:
-          name: lint-logs
+          name: lint-logs-${{ matrix.runner }}
           path: test-logs/
           retention-days: 30
 
   # The default test cell -- fast feedback for PR authors. The full
   # charter matrix runs in parallel below.
   test:
-    name: Test (orc/release/threads:on)
-    runs-on: ubuntu-latest
+    name: Test (orc/release/threads:on) (${{ matrix.runner }})
+    strategy:
+      fail-fast: false
+      matrix:
+        runner: [incus, tart-linux-arm, macos-tart]
+    runs-on: ${{ matrix.runner }}
     steps:
       - uses: actions/checkout@v4
       - name: Setup Nix
@@ -42,7 +50,7 @@ jobs:
       - if: always()
         uses: actions/upload-artifact@v4
         with:
-          name: test-logs
+          name: test-logs-${{ matrix.runner }}
           path: test-logs/
           retention-days: 30
 
@@ -50,14 +58,15 @@ jobs:
   # cell runs as a separate matrix entry so failures show up granularly
   # and parallelism is maximised.
   charter-matrix:
-    name: Charter (${{ matrix.mm }}/${{ matrix.mode }}/threads:${{ matrix.threads }})
-    runs-on: ubuntu-latest
+    name: Charter (${{ matrix.mm }}/${{ matrix.mode }}/threads:${{ matrix.threads }}) (${{ matrix.runner }})
     strategy:
       fail-fast: false
       matrix:
+        runner: [incus, tart-linux-arm, macos-tart]
         mm: [arc, orc, refc]
         mode: [debug, release, danger]
         threads: [on, off]
+    runs-on: ${{ matrix.runner }}
     steps:
       - uses: actions/checkout@v4
       - name: Setup Nix
@@ -70,7 +79,7 @@ jobs:
       - if: always()
         uses: actions/upload-artifact@v4
         with:
-          name: charter-${{ matrix.mm }}-${{ matrix.mode }}-${{ matrix.threads }}-logs
+          name: charter-${{ matrix.mm }}-${{ matrix.mode }}-${{ matrix.threads }}-${{ matrix.runner }}-logs
           path: test-logs/
           retention-days: 30
 
@@ -78,7 +87,8 @@ jobs:
   # own cell so a single sanitizer regression doesn't mask others.
   sanitizers:
     name: Sanitizer (${{ matrix.kind }})
-    runs-on: ubuntu-latest
+    # Linux-only (clang sanitizers); mapped to the Linux AMD64 Nix class.
+    runs-on: incus
     strategy:
       fail-fast: false
       matrix:
@@ -102,7 +112,8 @@ jobs:
   # Valgrind -- secondary leak verification beyond LSan.
   valgrind:
     name: Valgrind
-    runs-on: ubuntu-latest
+    # Linux-only (valgrind); mapped to the Linux AMD64 Nix class.
+    runs-on: incus
     steps:
       - uses: actions/checkout@v4
       - name: Setup Nix
@@ -122,7 +133,7 @@ jobs:
   # macOS parity check.
   test-macos:
     name: Test (macOS)
-    runs-on: macos-latest
+    runs-on: macos-tart
     steps:
       - uses: actions/checkout@v4
       - name: Setup Nix
@@ -144,7 +155,8 @@ jobs:
   test-leaks-heavy:
     name: Heavy leak budgets (100k cycles)
     if: github.ref == 'refs/heads/main'
-    runs-on: ubuntu-latest
+    # Linux-only leak-budget toolchain; mapped to the Linux AMD64 Nix class.
+    runs-on: incus
     steps:
       - uses: actions/checkout@v4
       - name: Setup Nix
@@ -163,8 +175,12 @@ jobs:
 
   # nix build of the package.
   nix-build:
-    name: nix build
-    runs-on: ubuntu-latest
+    name: nix build (${{ matrix.runner }})
+    strategy:
+      fail-fast: false
+      matrix:
+        runner: [incus, tart-linux-arm, macos-tart]
+    runs-on: ${{ matrix.runner }}
     steps:
       - uses: actions/checkout@v4
       - name: Setup Nix
