@@ -11,19 +11,20 @@
 ## --------------------------
 ## * Public types are value `object` -- never `ref object`.
 ## * `=copy` is disabled on `Screen`. Callers move via `=sink` or pass `var`.
-## * `=destroy` is the single resource-release path -- it calls `vterm_free`.
-## * No raw `ptr` is exposed. The internal `vt: ptr VTerm` field is private
-##   to this module (we expose `=destroy` and friends but not the pointer).
+## * Destruction releases `vterm_free` deterministically at the owning
+##   `Screen`'s scope exit under every memory manager. Which *type* carries
+##   the hook differs between arc/orc and refc -- see the
+##   `when defined(gcDestructors)` block for why.
+## * No raw `ptr` is exposed. The libvterm instance lives behind the private
+##   `OwnedVTerm` wrapper inside the equally private `ScreenInner`.
 ## * `cast` is forbidden in the public API. Internally this module uses
-##   exactly four `cast[...]` sites at the FFI boundary, each commented
+##   exactly three `cast[...]` sites at the FFI boundary, each commented
 ##   inline:
 ##     1. `innerOf` -- `cast[ptr ScreenInner](pointer)` recovers the
 ##        Nim self-pointer from libvterm's `user` callback argument.
-##     2. `newScreen` -- `cast[ptr ScreenInner](alloc0(...))` narrows a
-##        bare `pointer` from the Nim allocator to the typed pointer.
-##     3. `feed` -- `cast[cstring](unsafeAddr bytes[0])` adapts an
+##     2. `feed` -- `cast[cstring](unsafeAddr bytes[0])` adapts an
 ##        `openArray[byte]` to libvterm's `vterm_input_write` cstring.
-##     4. `region` -- `cast[cstring](buf[0].addr)` writes into a Nim
+##     3. `region` -- `cast[cstring](buf[0].addr)` writes into a Nim
 ##        `string` buffer via libvterm's `vterm_screen_get_text`.
 ##
 ## Memory model
@@ -31,8 +32,9 @@
 ## libvterm callbacks fire on the same OS thread as `vterm_input_write`.
 ## The wrapper allocates one heap block (`ScreenInner`) per `Screen` and
 ## hands its address to libvterm as the C `user` pointer. Each thunk casts
-## the pointer back to `ptr ScreenInner`. The block lives until the
-## `Screen` destructor runs, which guarantees lifetime > callback firing.
+## the pointer back to `ptr ScreenInner`. The block lives until the last
+## `Screen` referring to it dies, which guarantees lifetime > callback
+## firing.
 ##
 ## We could in principle keep `ScreenInner` inline inside the `Screen`
 ## value, but that would make `=sink` painful (libvterm would hold a
@@ -40,6 +42,31 @@
 ## once at construction time and pinning it for the screen's life is the
 ## standard pattern; it is the *only* heap allocation introduced by this
 ## library on top of libvterm's own allocations.
+##
+## That block is a **traced** allocation (`new`), not raw `alloc0` memory.
+## This is load-bearing, not a style choice: `ScreenInner` embeds
+## `ExtendedState`, whose per-cell grids, hyperlink/image tables and OSC
+## fragment buffers are ordinary GC-managed `seq`/`string`/`Table`
+## objects. Under `--mm:refc` the collector keeps such objects alive only
+## if the memory holding the reference is itself traced. `alloc0` memory
+## is not traced, so every buffer inside `ExtendedState` was an
+## unreachable root: the mark phase swept the grid while the plain-`int`
+## `rows`/`cols` beside it stayed valid, and the next `cellAt` indexed a
+## freed buffer with in-range-looking coordinates. arc/orc never traced
+## anything and so never noticed, which is why this reproduced on the
+## refc matrix cells only -- in debug *and* release, ruling out an
+## optimisation artifact.
+##
+## Consequence for the destructor hooks: see the `when defined(gcDestructors)`
+## block below, which explains why the release path lives on different
+## types under arc/orc and refc.
+##
+## Threading: a `Screen` must be created, fed and destroyed on one thread.
+## That was already true before the block became traced -- `ExtendedState`'s
+## buffers have always been ordinary GC memory, which under `--mm:refc` is
+## thread-local -- so the `new` does not narrow what callers may do. The
+## callback contract (libvterm calls back on the `vterm_input_write`
+## thread) is what makes the requirement natural.
 
 import std/[options, strutils, unicode]
 import ./ffi
@@ -96,13 +123,30 @@ type
     hyperlinkId*: HyperlinkId     ## 0 if no active hyperlink
     imageRef*: ImageRef           ## 0 if cell is not part of an image
 
+  OwnedVTerm = object
+    ## Sole owner of one raw libvterm instance.
+    ##
+    ## This wrapper exists so `ScreenInner` needs no hand-written
+    ## `=destroy`. On Nim 2.2.4 a user-defined destructor on an object
+    ## type *suppresses* the compiler-generated destruction of that
+    ## object's fields, so hand-writing one for `ScreenInner` would mean
+    ## re-listing -- and never once forgetting -- every heap-backed field
+    ## it owns. Wrapping the single resource the compiler cannot manage
+    ## keeps that list empty and makes the type safe to extend.
+    p: ptr VTerm
+
   ScreenInner = object
     ## Heap-pinned per-screen scratch struct that libvterm's C callbacks
     ## see via the user-data pointer.
     ##
     ## We never expose this type publicly. It exists in screen.nim instead
     ## of ffi.nim because it embeds the public `ExtendedState` type.
-    vt: ptr VTerm
+    ##
+    ## Allocated with `new`, never `alloc0` -- see the "Memory model"
+    ## note in the module header. `extended` alone owns eight `seq`s,
+    ## two `Table`s and eight `string`s; all of them are invisible to the
+    ## refc collector if this block is not itself traced.
+    vt: OwnedVTerm
     rows, cols: int
     extended: ExtendedState
 
@@ -126,10 +170,15 @@ type
   Screen* = object
     ## Owning handle for one libvterm instance + extended state.
     ##
-    ## Charter rules: not a ref; `=copy` disabled; `=destroy` releases.
+    ## Charter rules: `Screen` itself is a value `object`, not a `ref`;
+    ## `=copy` is disabled; destruction releases the libvterm instance.
     ## All accessor procs take `Screen` (or `var Screen`) by value/ref;
-    ## none escape the address of the inner pointer.
-    inner: ptr ScreenInner
+    ## none escape the address of the inner block.
+    inner: ref ScreenInner
+      ## Traced owner of the pinned inner block. `ref` (not `ptr`) is what
+      ## makes the `ExtendedState` buffers reachable for `--mm:refc`'s mark
+      ## phase; the raw address handed to libvterm is `addr inner[]`, which
+      ## Nim never relocates.
 
 proc `==`*(a, b: HyperlinkId): bool {.borrow.}
 proc `==`*(a, b: ImageRef): bool {.borrow.}
@@ -219,7 +268,7 @@ proc fallbackOscThunk(command: cint; frag: VTermStringFragment;
   ## cells touched by intervening text.
   let inner = innerOf(user)
   var pos: VTermPos
-  let state = vterm_obtain_state(inner.vt)
+  let state = vterm_obtain_state(inner.vt.p)
   vterm_state_get_cursorpos(state, addr pos)
   handleOsc(inner.extended, int(command), frag.str, fragLen(frag),
             fragInitial(frag), fragFinal(frag),
@@ -234,7 +283,7 @@ proc fallbackDcsThunk(command: cstring; commandlen: csize_t;
   ## Sixel (final byte `q`) -- is routed here.
   let inner = innerOf(user)
   var pos: VTermPos
-  let state = vterm_obtain_state(inner.vt)
+  let state = vterm_obtain_state(inner.vt.p)
   vterm_state_get_cursorpos(state, addr pos)
   handleDcs(inner.extended, command, int(commandlen),
             frag.str, fragLen(frag),
@@ -248,7 +297,7 @@ proc fallbackApcThunk(frag: VTermStringFragment;
   ## every APC reaches us. We use it for Kitty graphics (leading `G`).
   let inner = innerOf(user)
   var pos: VTermPos
-  let state = vterm_obtain_state(inner.vt)
+  let state = vterm_obtain_state(inner.vt.p)
   vterm_state_get_cursorpos(state, addr pos)
   handleApc(inner.extended, frag.str, fragLen(frag),
             fragInitial(frag), fragFinal(frag),
@@ -267,30 +316,48 @@ proc fallbackApcThunk(frag: VTermStringFragment;
 # ---------------------------------------------------------------------------
 
 proc `=copy`*(dest: var Screen; src: Screen) {.error.}
+proc `=copy`(dest: var OwnedVTerm; src: OwnedVTerm) {.error.}
+  ## An `OwnedVTerm` is unique by construction; copying one would hand two
+  ## owners the same `vterm_free` obligation.
 
 when defined(gcDestructors):
-  proc `=destroy`*(s: Screen) =
-    if s.inner != nil:
-      if s.inner.vt != nil:
-        vterm_free(s.inner.vt)
-        s.inner.vt = nil
-      `=destroy`(s.inner.extended)
-      `=destroy`(s.inner.title)
-      `=destroy`(s.inner.iconName)
-      dealloc(s.inner)
+  # arc/orc: release is fully compiler-driven and `Screen` deliberately
+  # carries NO `=destroy` hook of its own.
+  #
+  # Nim 2.2.4 does not destroy an object's fields when that object has a
+  # user-defined destructor (verified with a standalone probe: a `ref`
+  # field of an object with a hand-written `=destroy` is never released).
+  # A hook on `Screen` would therefore strand the entire `ScreenInner`
+  # block -- libvterm instance included -- so the chain is instead:
+  #
+  #   generated =destroy(Screen)
+  #     -> releases `inner`; last reference dies
+  #     -> generated =destroy(ScreenInner)
+  #          -> =destroy(extended) / title / iconName   (generated)
+  #          -> =destroy(OwnedVTerm)                    (below)
+  #               -> vterm_free
+  #
+  # Deterministic and at exactly the same program point as before: the
+  # scope exit of the owning `Screen`.
+  proc `=destroy`(o: OwnedVTerm) =
+    if o.p != nil:
+      vterm_free(o.p)
 else:
-  # Legacy refc signature -- Nim 2.x's `proc =destroy(s: T)` is gated on
-  # `defined(gcDestructors)` (i.e. arc/orc). Under `--mm:refc` the older
-  # `proc =destroy(s: var T)` signature is enforced. Same body.
+  # refc: the collector never runs `=destroy` hooks on the objects it
+  # sweeps (verified with the same probe), so the one resource the GC
+  # knows nothing about -- the libvterm instance -- has to be released
+  # from the hook the compiler *does* call, which is `Screen`'s. Nim
+  # 2.x's `proc =destroy(s: T)` form is gated on `defined(gcDestructors)`;
+  # under `--mm:refc` the older `proc =destroy(s: var T)` signature is
+  # the one that gets invoked.
+  #
+  # Nothing else is released here on purpose. `extended`, `title` and
+  # `iconName` are ordinary GC-managed memory and are collected normally
+  # -- which is true only because `inner` is now a traced allocation.
   proc `=destroy`*(s: var Screen) =
-    if s.inner != nil:
-      if s.inner.vt != nil:
-        vterm_free(s.inner.vt)
-        s.inner.vt = nil
-      `=destroy`(s.inner.extended)
-      `=destroy`(s.inner.title)
-      `=destroy`(s.inner.iconName)
-      dealloc(s.inner)
+    if s.inner != nil and s.inner.vt.p != nil:
+      vterm_free(s.inner.vt.p)
+      s.inner.vt.p = nil
 
 # ---------------------------------------------------------------------------
 # Construction
@@ -299,28 +366,36 @@ else:
 proc newScreen*(rows, cols: int): Screen =
   ## Create a new Screen with the given dimensions.
   doAssert rows > 0 and cols > 0, "screen dimensions must be positive"
-  let inner = cast[ptr ScreenInner](alloc0(sizeof(ScreenInner)))
-  # CHARTER-JUSTIFIED CAST 2/2: alloc0 returns `pointer`; we narrow to
-  # `ptr ScreenInner`. The size argument matches the target type exactly.
+  var inner: ref ScreenInner
+  new inner
+  # `new`, not `alloc0`: this block embeds `ExtendedState`, whose grids,
+  # tables and buffers are GC-managed. Raw allocator memory is not walked
+  # by `--mm:refc`'s mark phase, so those buffers had no live root and
+  # were swept out from under the still-valid `rows`/`cols` beside them.
+  # See the module header for the full account.
+  #
+  # The address is stable for the block's lifetime -- Nim never relocates
+  # heap cells -- so it is safe to hand to libvterm as the C `user` word.
+  let innerPtr = addr inner[]
   inner.rows = rows
   inner.cols = cols
   inner.cursorShape = csBlock
   inner.cursorVisible = true
   inner.extended = newExtendedState()
   resizeGrids(inner.extended, rows, cols)
-  inner.vt = vterm_new(rows.cint, cols.cint)
-  if inner.vt == nil:
-    dealloc(inner)
+  inner.vt.p = vterm_new(rows.cint, cols.cint)
+  if inner.vt.p == nil:
+    # `inner` is GC-owned; unwinding drops the last reference to it.
     raise newException(OSError, "vterm_new failed")
-  vterm_set_utf8(inner.vt, 1.cint)
+  vterm_set_utf8(inner.vt.p, 1.cint)
 
   # Materialise the state layer + screen layer. Order matters:
   # * `vterm_obtain_state` registers state's parser callbacks with the
   #   parser layer. We must NOT install our own parser callbacks after
   #   this -- doing so would unhook the state machine entirely.
   # * `vterm_obtain_screen` then registers screen's state callbacks.
-  let state = vterm_obtain_state(inner.vt)
-  let scr = vterm_obtain_screen(inner.vt)
+  let state = vterm_obtain_state(inner.vt.p)
+  let scr = vterm_obtain_screen(inner.vt.p)
   # Allocate the alt-screen buffer up-front so DEC mode 1049 / 47 / 1047
   # actually switch to a valid back-buffer rather than no-op-ing in
   # libvterm's "alt-screen disabled" branch.
@@ -332,7 +407,7 @@ proc newScreen*(rows, cols: int): Screen =
   # callbacks struct *pointer* (does not copy), so we park it in the
   # heap-pinned ScreenInner.
   inner.screenCallbacks.settermprop = settermPropThunk
-  vterm_screen_set_callbacks(scr, addr inner.screenCallbacks, inner)
+  vterm_screen_set_callbacks(scr, addr inner.screenCallbacks, innerPtr)
 
   # State-layer fallbacks: we receive every OSC libvterm doesn't itself
   # handle (OSC 7, 8, 9, 99, 1337, ...) plus DCS (Sixel) and APC (Kitty
@@ -343,7 +418,7 @@ proc newScreen*(rows, cols: int): Screen =
   inner.stateFallbacks.osc = fallbackOscThunk
   inner.stateFallbacks.dcs = fallbackDcsThunk
   inner.stateFallbacks.apc = fallbackApcThunk
-  vterm_state_set_unrecognised_fallbacks(state, addr inner.stateFallbacks, inner)
+  vterm_state_set_unrecognised_fallbacks(state, addr inner.stateFallbacks, innerPtr)
 
   result = Screen(inner: inner)
 
@@ -354,7 +429,7 @@ proc size*(s: Screen): tuple[rows, cols: int] =
 proc resize*(s: var Screen; rows, cols: int) =
   doAssert s.inner != nil
   doAssert rows > 0 and cols > 0
-  vterm_set_size(s.inner.vt, rows.cint, cols.cint)
+  vterm_set_size(s.inner.vt.p, rows.cint, cols.cint)
   s.inner.rows = rows
   s.inner.cols = cols
   resizeGrids(s.inner.extended, rows, cols)
@@ -431,7 +506,7 @@ proc cursorRowCol(inner: ptr ScreenInner): tuple[row, col: int] =
   ## Read libvterm's current cursor position. Used by the chunked feed
   ## walker to decide which cells were touched by a fixed-pen run.
   var pos: VTermPos
-  let state = vterm_obtain_state(inner.vt)
+  let state = vterm_obtain_state(inner.vt.p)
   vterm_state_get_cursorpos(state, addr pos)
   (int(pos.row), int(pos.col))
 
@@ -477,7 +552,7 @@ proc feedRaw(inner: ptr ScreenInner; bytes: openArray[byte]; lo, hi: int) =
   let p = cast[cstring](unsafeAddr bytes[lo])
   # NB: `cast[cstring]` at the FFI boundary -- same charter justification
   # as the parent `feed`.
-  discard vterm_input_write(inner.vt, p, csize_t(hi - lo))
+  discard vterm_input_write(inner.vt.p, p, csize_t(hi - lo))
 
 proc feed*(s: var Screen; bytes: openArray[byte]) =
   ## Feed UTF-8 / ANSI bytes from the child process into the parser.
@@ -491,8 +566,10 @@ proc feed*(s: var Screen; bytes: openArray[byte]) =
   ## representation for either. Single / double / curly remain libvterm-
   ## tracked.
   if s.inner == nil or bytes.len == 0: return
-  let inner = s.inner
-  let scr = vterm_obtain_screen(inner.vt)
+  # The chunked walker and the callback thunks share one `ptr ScreenInner`
+  # view of the block; `s.inner` keeps it alive for the duration.
+  let inner = addr s.inner[]
+  let scr = vterm_obtain_screen(inner.vt.p)
   # Walk the byte stream once, dispatching SGR-pen updates between
   # text-bearing chunks. Other CSIs (DEC modes, mouse, kitty kbd, etc.)
   # are still pre-scanned -- we just dispatch them to the extended-state
@@ -562,7 +639,7 @@ proc cellAt*(s: Screen; row, col: int): Cell =
   if s.inner == nil: return
   if row < 0 or row >= s.inner.rows or col < 0 or col >= s.inner.cols:
     return
-  let scr = vterm_obtain_screen(s.inner.vt)
+  let scr = vterm_obtain_screen(s.inner.vt.p)
   var raw: VTermScreenCellRaw
   let pos = VTermPos(row: row.cint, col: col.cint)
   if vterm_screen_get_cell(scr, pos, addr raw) == 0:
@@ -623,7 +700,7 @@ proc region*(s: Screen; row, col, w, h: int): string =
   let r1 = min(s.inner.rows, row + h)
   let c1 = min(s.inner.cols, col + w)
   if r1 <= r0 or c1 <= c0: return ""
-  let scr = vterm_obtain_screen(s.inner.vt)
+  let scr = vterm_obtain_screen(s.inner.vt.p)
   let rect = VTermRect(startRow: r0.cint, endRow: r1.cint,
                        startCol: c0.cint, endCol: c1.cint)
   # Reasonable upper bound: 4 bytes per cell (max UTF-8 codepoint) plus
@@ -651,7 +728,7 @@ proc containsText*(s: Screen; needle: string): bool =
 
 proc cursorPosition*(s: Screen): tuple[row, col: int] =
   if s.inner == nil: return (0, 0)
-  let state = vterm_obtain_state(s.inner.vt)
+  let state = vterm_obtain_state(s.inner.vt.p)
   var pos: VTermPos
   vterm_state_get_cursorpos(state, addr pos)
   (int(pos.row), int(pos.col))

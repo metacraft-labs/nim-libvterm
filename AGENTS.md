@@ -88,6 +88,7 @@ tests/
   test_state_mirror_pull_after_push.nim
   test_image_registry.nim         # image-protocol registry framework
   test_api_invariants.nim         # charter §1 API rules
+  test_gc_traced_inner_block.nim  # inner block must stay GC-reachable
   test_no_leaks.nim               # leak-budget suite
 .github/workflows/ci.yml          # full charter matrix on every PR
 flake.nix                         # nix devShell + checks
@@ -111,12 +112,30 @@ nim_libvterm.nimble               # single-source-of-truth version
   `Notification`, `Image`, `WindowOp` are value `object`s. `=copy` is
   disabled on `Screen`; `=destroy` calls `vterm_free`. Charter §1.
 
-- **Heap-pinned inner struct.** `Screen` holds `inner: ptr ScreenInner`.
-  The inner struct embeds the libvterm pointer, the extended-state
-  overlay, and the callback-struct storage. It's heap-allocated once at
-  construction and freed in `=destroy`. Two `cast[ptr ScreenInner]`
-  sites recover the pointer in callback thunks; both are commented
-  inline.
+- **Heap-pinned inner struct, allocated with `new`.** `Screen` holds
+  `inner: ref ScreenInner`. The inner struct embeds the libvterm handle,
+  the extended-state overlay, and the callback-struct storage. It's
+  heap-allocated once at construction and its address (`addr inner[]`,
+  stable for the block's life) is what libvterm gets as its `user` word;
+  the callback thunks `cast` it back to `ptr ScreenInner`.
+
+  The allocation **must** be traced (`new`), not raw (`alloc0`).
+  `ExtendedState` embeds `seq`s, `string`s and `Table`s; under
+  `--mm:refc` the collector only keeps those alive when the memory
+  holding the reference is itself part of the heap graph. `alloc0`
+  memory is not, so the grids were swept while the `rows`/`cols`
+  integers beside them stayed valid, and `cellAt` indexed freed memory
+  (`IndexDefect`). arc/orc do not trace and never saw it. Regression
+  test: `tests/test_gc_traced_inner_block.nim`.
+
+  Consequence: release is arranged differently per memory manager, and
+  the reason is spelled out at the `when defined(gcDestructors)` block
+  in `screen.nim`. arc/orc give `Screen` *no* hand-written `=destroy`
+  (one would suppress destruction of its own fields and strand the
+  block); the libvterm instance is freed by the `OwnedVTerm` RAII
+  wrapper inside `ScreenInner`. refc keeps `=destroy(var Screen)`,
+  because its collector never runs `=destroy` hooks on the objects it
+  sweeps, and lets the GC reclaim everything else.
 
 - **Extended-state coverage uses two complementary paths.**
 
@@ -155,14 +174,15 @@ nim_libvterm.nimble               # single-source-of-truth version
 - Public APIs never expose raw `ptr`. Use `openArray[T]`, `seq[byte]`,
   `string`, or typed handles (`HyperlinkId`, `ImageRef` -- both
   `distinct uint32`).
-- `cast` is forbidden in the public API; it appears at exactly four
+- `cast` is forbidden in the public API; it appears at exactly three
   sites in `screen.nim`, all at the FFI boundary and all commented
   inline: (1) `innerOf` recovers the Nim self-pointer from libvterm's
-  `user` callback argument, (2) `newScreen` narrows the `pointer`
-  returned by `alloc0` to `ptr ScreenInner`, (3) `feed` adapts
-  `openArray[byte]` to a `cstring` for `vterm_input_write`, and
-  (4) `region` exposes a Nim `string` buffer to
-  `vterm_screen_get_text`. Each use is justified inline.
+  `user` callback argument, (2) `feed` adapts `openArray[byte]` to a
+  `cstring` for `vterm_input_write`, and (3) `region` exposes a Nim
+  `string` buffer to `vterm_screen_get_text`. Each use is justified
+  inline. (A fourth site -- narrowing `alloc0`'s `pointer` to
+  `ptr ScreenInner` -- went away when the inner block became a traced
+  `ref` allocation.)
 - Every test is a real-stack integration test -- no mocks. Tests feed
   real byte streams to the real libvterm via FFI and assert on the
   real `Screen` state.
