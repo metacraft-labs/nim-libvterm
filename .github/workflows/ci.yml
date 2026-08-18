@@ -2,7 +2,12 @@ name: CI
 
 on:
   push:
-    branches: [main]
+    # This repo's default branch is `dev`; `main` is a stale ancestor that
+    # nobody pushes to. Listing only `main` here meant mainline pushes ran
+    # no CI at all -- the charter matrix, the sanitizers and the valgrind
+    # leak check only ever ran on pull requests. `ci-reprobuild.yml` in
+    # this same directory already tracks all three branches; this matches it.
+    branches: [main, dev, stable]
   pull_request:
 
 jobs:
