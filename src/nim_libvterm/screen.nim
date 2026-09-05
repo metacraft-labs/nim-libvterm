@@ -644,9 +644,36 @@ proc cellAt*(s: Screen; row, col: int): Cell =
   let pos = VTermPos(row: row.cint, col: col.cint)
   if vterm_screen_get_cell(scr, pos, addr raw) == 0:
     return
-  if raw.chars[0] != 0:
-    result.rune = Rune(raw.chars[0])
-  result.width = int(raw.width)
+  # THE TRAILING HALF OF A DOUBLE-WIDTH CELL, and it is not a rune.
+  #
+  # libvterm stamps `chars[0] = (uint32_t)-1` on the cell to the right of a
+  # width-2 glyph (`vendor/libvterm/src/screen.c:191`) and uses that sentinel,
+  # and only that sentinel, to answer `width` for the LEADING half
+  # (`screen.c:1019`). `vterm_screen_get_cell` copies `chars` verbatim, so a
+  # query for the trailing half itself yields `chars[0] == 0xFFFFFFFF` and
+  # `width == 1` — 0xFFFFFFFF is not a codepoint, and `Rune(...)` of it raised
+  # `RangeDefect: value out of range: 4294967295` on every screen containing a
+  # CJK glyph or a wide emoji. Measured: feeding "┌世界─┐" through this Screen
+  # and reading cell (0,2) crashed `cellAt`, and took down with it every caller
+  # that walks a whole screen THROUGH `cellAt` — TermAssert's `renderPlain`,
+  # `renderCellmap`, `renderAnsi`, `renderSvg` and `renderTreedump` are all of
+  # them. (`contents()` was NOT affected: it goes through `region`, which asks
+  # libvterm for the text with `vterm_screen_get_text` and never builds a
+  # `Rune`. So the screen still had readable TEXT while every per-cell reader
+  # of it died, which is what made this hard to see.)
+  #
+  # The trailing half is reported the way every consumer already models it and
+  # the way `isonim-tui/src/isonim_tui/cells.nim` documents its own: `rune = 0`,
+  # `width = 0`. That makes "skip the cells whose width is 0" a correct screen
+  # walk, and the same rule on both sides of a comparison between a composited
+  # buffer and a parsed one.
+  const wideContinuationSentinel = high(uint32)
+  if raw.chars[0] == wideContinuationSentinel:
+    result.width = 0
+  else:
+    if raw.chars[0] != 0:
+      result.rune = Rune(raw.chars[0])
+    result.width = int(raw.width)
   result.fg = toColor(raw.fg)
   result.bg = toColor(raw.bg)
   if attrBold(raw.attrs): result.attrs.incl caBold
