@@ -167,6 +167,14 @@ type
     focusReportEnabled: bool
     mouseProtocolNum: int
 
+    pendingUtf8: seq[byte]
+      ## An INCOMPLETE multi-byte UTF-8 sequence at the end of the last `feed`,
+      ## held back until the bytes that finish it arrive. See `utf8HoldBack`
+      ## below for the defect this exists to avoid; the short version is that
+      ## libvterm keeps SEVERAL UTF-8 decoder instances and chooses between them
+      ## per text run, so a sequence split across two `vterm_input_write` calls
+      ## can be decoded by two different ones and lost by both.
+
   Screen* = object
     ## Owning handle for one libvterm instance + extended state.
     ##
@@ -554,8 +562,104 @@ proc feedRaw(inner: ptr ScreenInner; bytes: openArray[byte]; lo, hi: int) =
   # as the parent `feed`.
   discard vterm_input_write(inner.vt.p, p, csize_t(hi - lo))
 
+proc utf8HoldBack*(bytes: openArray[byte]): int =
+  ## How many bytes at the END of `bytes` form an INCOMPLETE UTF-8 sequence
+  ## (0 when the buffer ends on a sequence boundary).
+  ##
+  ## WHY THIS EXISTS. libvterm holds FIVE UTF-8 decoder instances -- one per
+  ## G0..G3 charset slot plus a dedicated `encoding_utf8` -- and
+  ## `state.c:on_text` picks between them ONCE PER TEXT RUN, from the high bit
+  ## of the run's first byte:
+  ##
+  ##     !(bytes[eaten] & 0x80) ? &state->encoding[state->gl_set]
+  ##                            : &state->encoding_utf8
+  ##
+  ## In UTF-8 mode `vterm_state_reset` makes all four G-slots UTF-8 decoders
+  ## too, each with its OWN `data` block. So a multi-byte sequence split across
+  ## two `vterm_input_write` calls is decoded by two different instances: the
+  ## first half's `bytes_remaining` is stranded in `encoding[gl_set]` (chosen
+  ## because that run began on an ASCII byte), and the continuation bytes that
+  ## arrive next are handed to `encoding_utf8`, which has no state and emits
+  ## U+FFFD for each of them. The stranded half then corrupts the NEXT
+  ## ASCII-initial run as well, because `decode_utf8` emits a second U+FFFD
+  ## when it meets an ASCII byte with `bytes_remaining` set.
+  ##
+  ## MEASURED, both symptoms and the boundary condition. Feeding
+  ## `CSI 1;1H` + `" "` + `"▒" x 10` as two writes split one byte before the
+  ## end of the last glyph puts U+FFFD at (0,10); feed one more ASCII-initial
+  ## run after it (`CSI 2;1H` + `"abc"`) and a SECOND U+FFFD lands at (1,0),
+  ## which is the stranded `bytes_remaining` corrupting the next run. Splitting
+  ## the same stream with NO ascii byte in the run -- so both halves take the
+  ## `encoding_utf8` branch -- is clean, which is what identifies the instance
+  ## choice rather than the split as the cause. A 40x120 screen of box-drawing
+  ## glyphs behind ASCII row labels, fed in 4096-byte chunks (which is exactly
+  ## what TermAssert's `pump` does with a pty), lost 5 cells to U+FFFD and 29
+  ## to the corruption that follows; at 1024-byte chunks, 20 and 115; at
+  ## 3-byte chunks, 69 and 545. `tests/test_utf8_split_across_feeds.nim` pins
+  ## every one of those, deterministically -- do NOT rely on an end-to-end pty
+  ## comparison for this, because whether a read lands mid-sequence is a
+  ## scheduling accident and 15 consecutive runs of one reproduced nothing.
+  ##
+  ## The remedy is to never hand libvterm a truncated sequence. `feed` holds
+  ## the tail back and prepends it to the next call, so whichever decoder
+  ## instance is chosen sees a whole sequence and cannot lose it. Fixing the
+  ## instance choice in the vendored C would be the other half of it, upstream.
+  var trailing = 0
+  var i = bytes.len - 1
+  while i >= 0 and trailing < 3 and (bytes[i] and 0xC0'u8) == 0x80'u8:
+    dec i
+    inc trailing
+  # Only continuation bytes: already malformed, and libvterm's own reporting
+  # of that is better than a hold-back that could never resolve.
+  if i < 0: return 0
+  let lead = bytes[i]
+  let need =
+    if (lead and 0x80'u8) == 0x00'u8: 1
+    elif (lead and 0xE0'u8) == 0xC0'u8: 2
+    elif (lead and 0xF0'u8) == 0xE0'u8: 3
+    elif (lead and 0xF8'u8) == 0xF0'u8: 4
+    else: 0
+  if need == 0: return 0        # invalid lead byte: libvterm's to report
+  let have = trailing + 1
+  if have < need: have else: 0
+
+proc feedChunk(s: var Screen; bytes: openArray[byte])
+
 proc feed*(s: var Screen; bytes: openArray[byte]) =
   ## Feed UTF-8 / ANSI bytes from the child process into the parser.
+  ##
+  ## An incomplete multi-byte UTF-8 sequence at the end of `bytes` is HELD BACK
+  ## and prepended to the next call -- see `utf8HoldBack` for the defect that
+  ## requires it. Callers that read a pty in fixed-size chunks (TermAssert's
+  ## `pump` reads 4096 at a time) split sequences routinely, and before this
+  ## the split silently produced U+FFFD.
+  if s.inner == nil: return
+  let inner = addr s.inner[]
+  if inner.pendingUtf8.len == 0 and bytes.len == 0: return
+  if inner.pendingUtf8.len == 0:
+    let hold = utf8HoldBack(bytes)
+    if hold == 0:
+      feedChunk(s, bytes)
+      return
+    if hold < bytes.len:
+      feedChunk(s, bytes.toOpenArray(0, bytes.len - hold - 1))
+    inner.pendingUtf8 = @[]
+    for i in bytes.len - hold ..< bytes.len:
+      inner.pendingUtf8.add bytes[i]
+    return
+  var buf = inner.pendingUtf8
+  inner.pendingUtf8 = @[]
+  for b in bytes: buf.add b
+  let hold = utf8HoldBack(buf)
+  if hold > 0:
+    for i in buf.len - hold ..< buf.len:
+      inner.pendingUtf8.add buf[i]
+    buf.setLen(buf.len - hold)
+  if buf.len > 0:
+    feedChunk(s, buf)
+
+proc feedChunk(s: var Screen; bytes: openArray[byte]) =
+  ## `feed` minus the UTF-8 hold-back.
   ##
   ## The byte stream is walked in chunks delimited by SGR sequences. For
   ## each chunk we record libvterm's cursor before and after, then stamp
