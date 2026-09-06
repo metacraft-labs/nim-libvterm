@@ -155,11 +155,11 @@ jobs:
           path: test-logs/
           retention-days: 30
 
-  # Heavy-weight 100k-cycle leak budget -- only on main, doesn't block
+  # Heavy-weight 100k-cycle leak budget -- only on the mainline, doesn't block
   # PRs.
   test-leaks-heavy:
     name: Heavy leak budgets (100k cycles)
-    if: github.ref == 'refs/heads/main'
+    if: github.ref == 'refs/heads/dev'
     # Linux-only leak-budget toolchain; mapped to the Linux AMD64 Nix class.
     runs-on: eph-linux-x64
     steps:
