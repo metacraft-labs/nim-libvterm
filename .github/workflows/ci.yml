@@ -12,7 +12,7 @@ on:
 
 jobs:
   lint:
-    name: Lint (${{ matrix.runner }})
+    name: Lint (${{ join(matrix.runner, '-') }})
     strategy:
       fail-fast: false
       matrix:
@@ -30,14 +30,14 @@ jobs:
       - if: always()
         uses: actions/upload-artifact@v4
         with:
-          name: lint-logs-${{ matrix.runner }}
+          name: lint-logs-${{ join(matrix.runner, '-') }}
           path: test-logs/
           retention-days: 30
 
   # The default test cell -- fast feedback for PR authors. The full
   # charter matrix runs in parallel below.
   test:
-    name: Test (orc/release/threads:on) (${{ matrix.runner }})
+    name: Test (orc/release/threads:on) (${{ join(matrix.runner, '-') }})
     strategy:
       fail-fast: false
       matrix:
@@ -55,7 +55,7 @@ jobs:
       - if: always()
         uses: actions/upload-artifact@v4
         with:
-          name: test-logs-${{ matrix.runner }}
+          name: test-logs-${{ join(matrix.runner, '-') }}
           path: test-logs/
           retention-days: 30
 
@@ -63,7 +63,7 @@ jobs:
   # cell runs as a separate matrix entry so failures show up granularly
   # and parallelism is maximised.
   charter-matrix:
-    name: Charter (${{ matrix.mm }}/${{ matrix.mode }}/threads:${{ matrix.threads }}) (${{ matrix.runner }})
+    name: Charter (${{ matrix.mm }}/${{ matrix.mode }}/threads:${{ matrix.threads }}) (${{ join(matrix.runner, '-') }})
     strategy:
       fail-fast: false
       matrix:
@@ -84,7 +84,7 @@ jobs:
       - if: always()
         uses: actions/upload-artifact@v4
         with:
-          name: charter-${{ matrix.mm }}-${{ matrix.mode }}-${{ matrix.threads }}-${{ matrix.runner }}-logs
+          name: charter-${{ matrix.mm }}-${{ matrix.mode }}-${{ matrix.threads }}-${{ join(matrix.runner, '-') }}-logs
           path: test-logs/
           retention-days: 30
 
@@ -180,7 +180,7 @@ jobs:
 
   # nix build of the package.
   nix-build:
-    name: nix build (${{ matrix.runner }})
+    name: nix build (${{ join(matrix.runner, '-') }})
     strategy:
       fail-fast: false
       matrix:
