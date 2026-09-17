@@ -12,16 +12,16 @@ on:
 
 jobs:
   lint:
-    name: Lint (${{ matrix.runner }})
+    name: Lint (${{ join(matrix.runner, '-') }})
     strategy:
       fail-fast: false
       matrix:
-        runner: [eph-linux-x64, eph-linux-arm64, eph-macos-arm64]
+        runner: [[self-hosted, linux, x64], [self-hosted, linux, arm64], [self-hosted, macos, arm64]]
     runs-on: ${{ matrix.runner }}
     steps:
       - uses: actions/checkout@v4
       - name: Setup Nix
-        uses: metacraft-labs/nixos-modules/.github/setup-nix@main
+        uses: metacraft-labs/devops-modules/.github/setup-nix@dev
         with:
           trusted-public-keys: ${{ vars.TRUSTED_PUBLIC_KEYS }}
           substituters: ${{ vars.SUBSTITUTERS }}
@@ -30,23 +30,23 @@ jobs:
       - if: always()
         uses: actions/upload-artifact@v4
         with:
-          name: lint-logs-${{ matrix.runner }}
+          name: lint-logs-${{ join(matrix.runner, '-') }}
           path: test-logs/
           retention-days: 30
 
   # The default test cell -- fast feedback for PR authors. The full
   # charter matrix runs in parallel below.
   test:
-    name: Test (orc/release/threads:on) (${{ matrix.runner }})
+    name: Test (orc/release/threads:on) (${{ join(matrix.runner, '-') }})
     strategy:
       fail-fast: false
       matrix:
-        runner: [eph-linux-x64, eph-linux-arm64, eph-macos-arm64]
+        runner: [[self-hosted, linux, x64], [self-hosted, linux, arm64], [self-hosted, macos, arm64]]
     runs-on: ${{ matrix.runner }}
     steps:
       - uses: actions/checkout@v4
       - name: Setup Nix
-        uses: metacraft-labs/nixos-modules/.github/setup-nix@main
+        uses: metacraft-labs/devops-modules/.github/setup-nix@dev
         with:
           trusted-public-keys: ${{ vars.TRUSTED_PUBLIC_KEYS }}
           substituters: ${{ vars.SUBSTITUTERS }}
@@ -55,7 +55,7 @@ jobs:
       - if: always()
         uses: actions/upload-artifact@v4
         with:
-          name: test-logs-${{ matrix.runner }}
+          name: test-logs-${{ join(matrix.runner, '-') }}
           path: test-logs/
           retention-days: 30
 
@@ -63,11 +63,11 @@ jobs:
   # cell runs as a separate matrix entry so failures show up granularly
   # and parallelism is maximised.
   charter-matrix:
-    name: Charter (${{ matrix.mm }}/${{ matrix.mode }}/threads:${{ matrix.threads }}) (${{ matrix.runner }})
+    name: Charter (${{ matrix.mm }}/${{ matrix.mode }}/threads:${{ matrix.threads }}) (${{ join(matrix.runner, '-') }})
     strategy:
       fail-fast: false
       matrix:
-        runner: [eph-linux-x64, eph-linux-arm64, eph-macos-arm64]
+        runner: [[self-hosted, linux, x64], [self-hosted, linux, arm64], [self-hosted, macos, arm64]]
         mm: [arc, orc, refc]
         mode: [debug, release, danger]
         threads: [on, off]
@@ -75,7 +75,7 @@ jobs:
     steps:
       - uses: actions/checkout@v4
       - name: Setup Nix
-        uses: metacraft-labs/nixos-modules/.github/setup-nix@main
+        uses: metacraft-labs/devops-modules/.github/setup-nix@dev
         with:
           trusted-public-keys: ${{ vars.TRUSTED_PUBLIC_KEYS }}
           substituters: ${{ vars.SUBSTITUTERS }}
@@ -84,7 +84,7 @@ jobs:
       - if: always()
         uses: actions/upload-artifact@v4
         with:
-          name: charter-${{ matrix.mm }}-${{ matrix.mode }}-${{ matrix.threads }}-${{ matrix.runner }}-logs
+          name: charter-${{ matrix.mm }}-${{ matrix.mode }}-${{ matrix.threads }}-${{ join(matrix.runner, '-') }}-logs
           path: test-logs/
           retention-days: 30
 
@@ -93,7 +93,7 @@ jobs:
   sanitizers:
     name: Sanitizer (${{ matrix.kind }})
     # Linux-only (clang sanitizers); mapped to the Linux AMD64 Nix class.
-    runs-on: eph-linux-x64
+    runs-on: [self-hosted, linux, x64]
     strategy:
       fail-fast: false
       matrix:
@@ -101,7 +101,7 @@ jobs:
     steps:
       - uses: actions/checkout@v4
       - name: Setup Nix
-        uses: metacraft-labs/nixos-modules/.github/setup-nix@main
+        uses: metacraft-labs/devops-modules/.github/setup-nix@dev
         with:
           trusted-public-keys: ${{ vars.TRUSTED_PUBLIC_KEYS }}
           substituters: ${{ vars.SUBSTITUTERS }}
@@ -118,11 +118,11 @@ jobs:
   valgrind:
     name: Valgrind
     # Linux-only (valgrind); mapped to the Linux AMD64 Nix class.
-    runs-on: eph-linux-x64
+    runs-on: [self-hosted, linux, x64]
     steps:
       - uses: actions/checkout@v4
       - name: Setup Nix
-        uses: metacraft-labs/nixos-modules/.github/setup-nix@main
+        uses: metacraft-labs/devops-modules/.github/setup-nix@dev
         with:
           trusted-public-keys: ${{ vars.TRUSTED_PUBLIC_KEYS }}
           substituters: ${{ vars.SUBSTITUTERS }}
@@ -138,11 +138,11 @@ jobs:
   # macOS parity check.
   test-macos:
     name: Test (macOS)
-    runs-on: eph-macos-arm64
+    runs-on: [self-hosted, macos, arm64]
     steps:
       - uses: actions/checkout@v4
       - name: Setup Nix
-        uses: metacraft-labs/nixos-modules/.github/setup-nix@main
+        uses: metacraft-labs/devops-modules/.github/setup-nix@dev
         with:
           trusted-public-keys: ${{ vars.TRUSTED_PUBLIC_KEYS }}
           substituters: ${{ vars.SUBSTITUTERS }}
@@ -155,17 +155,17 @@ jobs:
           path: test-logs/
           retention-days: 30
 
-  # Heavy-weight 100k-cycle leak budget -- only on main, doesn't block
+  # Heavy-weight 100k-cycle leak budget -- only on the mainline, doesn't block
   # PRs.
   test-leaks-heavy:
     name: Heavy leak budgets (100k cycles)
-    if: github.ref == 'refs/heads/main'
+    if: github.ref == 'refs/heads/dev'
     # Linux-only leak-budget toolchain; mapped to the Linux AMD64 Nix class.
-    runs-on: eph-linux-x64
+    runs-on: [self-hosted, linux, x64]
     steps:
       - uses: actions/checkout@v4
       - name: Setup Nix
-        uses: metacraft-labs/nixos-modules/.github/setup-nix@main
+        uses: metacraft-labs/devops-modules/.github/setup-nix@dev
         with:
           trusted-public-keys: ${{ vars.TRUSTED_PUBLIC_KEYS }}
           substituters: ${{ vars.SUBSTITUTERS }}
@@ -180,16 +180,16 @@ jobs:
 
   # nix build of the package.
   nix-build:
-    name: nix build (${{ matrix.runner }})
+    name: nix build (${{ join(matrix.runner, '-') }})
     strategy:
       fail-fast: false
       matrix:
-        runner: [eph-linux-x64, eph-linux-arm64, eph-macos-arm64]
+        runner: [[self-hosted, linux, x64], [self-hosted, linux, arm64], [self-hosted, macos, arm64]]
     runs-on: ${{ matrix.runner }}
     steps:
       - uses: actions/checkout@v4
       - name: Setup Nix
-        uses: metacraft-labs/nixos-modules/.github/setup-nix@main
+        uses: metacraft-labs/devops-modules/.github/setup-nix@dev
         with:
           trusted-public-keys: ${{ vars.TRUSTED_PUBLIC_KEYS }}
           substituters: ${{ vars.SUBSTITUTERS }}
