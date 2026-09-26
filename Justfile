@@ -8,6 +8,10 @@
 ##     are what CI invokes per matrix cell.
 ##   * Hermetic flags (`--skipParentCfg --skipUserCfg`) are baked into
 ##     `nim-flags` so every invocation gets the same isolation.
+##   * `--skipParentCfg` also switches off the repo-root `config.nims`, which
+##     keeps every nimcache inside this checkout, so every `nim` invocation
+##     below names its own `--nimcache:` under `.nimcache/`, in the same
+##     layout the config uses: `.nimcache/<module dir>/<module>_<d|r|check>`.
 
 set shell := ["bash", "-eu", "-o", "pipefail", "-c"]
 
@@ -27,9 +31,16 @@ src-paths := "--path:src --path:tests"
 # binaries link cleanly.
 nim-flags := "--skipParentCfg --skipUserCfg --styleCheck:usages --styleCheck:error --passC:-w --passC:-I${NIM_LIBVTERM_ZLIB_INCLUDE:-/usr/include} --passL:-L${NIM_LIBVTERM_ZLIB_LIB:-/usr/lib}"
 
+# Per-checkout nimcache (see config.nims), relative to the recipe working
+# directory, which is this file's directory.  Nim's default,
+# `~/.cache/nim/<module>_<d|r>`, is shared by every checkout on the machine.
+# (Relative on purpose: an absolute Windows path would lose its backslashes
+# in bash recipes.)
+nimcache := ".nimcache"
+
 # The ordered list of test files. Adding a new test_*.nim here gates it
 # on CI.
-tests := "tests/test_libvterm_basic_hello.nim tests/test_libvterm_csi_cursor_move.nim tests/test_libvterm_sgr_color_full_palette.nim tests/test_libvterm_resize_round_trip.nim tests/test_libvterm_alternate_screen.nim tests/test_osc7_cwd.nim tests/test_osc8_hyperlink.nim tests/test_osc9_notification.nim tests/test_dec_2026_synchronized_output.nim tests/test_csi_t_window_ops.nim tests/test_kitty_keyboard.nim tests/test_modify_other_keys.nim tests/test_mouse_protocol.nim tests/test_state_mirror_pull_after_push.nim tests/test_image_registry.nim tests/test_decode_kitty_rgba.nim tests/test_decode_sixel.nim tests/test_decode_sixel_hls.nim tests/test_decode_iterm2.nim tests/test_decode_png_rgba.nim tests/test_decode_png_rgb.nim tests/test_decode_png_invalid.nim tests/test_decode_jpeg_rgba.nim tests/test_decode_gif_rgba.nim tests/test_dcs_sixel_ingest.nim tests/test_apc_kitty_ingest.nim tests/test_apc_kitty_png_defer.nim tests/test_kitty_png_ingest.nim tests/test_iterm2_png_decode.nim tests/test_iterm2_jpeg_decode.nim tests/test_iterm2_gif_decode.nim tests/test_sgr_extended_underline.nim tests/test_sgr_underline_color.nim tests/test_wide_glyph_continuation_cell.nim tests/test_utf8_split_across_feeds.nim tests/test_api_invariants.nim tests/test_gc_traced_inner_block.nim tests/test_no_leaks.nim"
+tests := "tests/test_libvterm_basic_hello.nim tests/test_libvterm_csi_cursor_move.nim tests/test_libvterm_sgr_color_full_palette.nim tests/test_libvterm_resize_round_trip.nim tests/test_libvterm_alternate_screen.nim tests/test_osc7_cwd.nim tests/test_osc8_hyperlink.nim tests/test_osc9_notification.nim tests/test_dec_2026_synchronized_output.nim tests/test_csi_t_window_ops.nim tests/test_kitty_keyboard.nim tests/test_modify_other_keys.nim tests/test_mouse_protocol.nim tests/test_state_mirror_pull_after_push.nim tests/test_image_registry.nim tests/test_decode_kitty_rgba.nim tests/test_decode_sixel.nim tests/test_decode_sixel_hls.nim tests/test_decode_iterm2.nim tests/test_decode_png_rgba.nim tests/test_decode_png_rgb.nim tests/test_decode_png_invalid.nim tests/test_decode_jpeg_rgba.nim tests/test_decode_gif_rgba.nim tests/test_dcs_sixel_ingest.nim tests/test_apc_kitty_ingest.nim tests/test_apc_kitty_png_defer.nim tests/test_kitty_png_ingest.nim tests/test_iterm2_png_decode.nim tests/test_iterm2_jpeg_decode.nim tests/test_iterm2_gif_decode.nim tests/test_sgr_extended_underline.nim tests/test_sgr_underline_color.nim tests/test_wide_glyph_continuation_cell.nim tests/test_utf8_split_across_feeds.nim tests/test_api_invariants.nim tests/test_gc_traced_inner_block.nim tests/test_no_leaks.nim tests/test_nimcache_is_worktree_local.nim"
 
 # --- Default targets (per repo-requirements.md) ---
 
@@ -39,6 +50,7 @@ build:
     @for t in {{tests}}; do \
       echo "Building $t"; \
       nim c {{nim-flags}} {{src-paths}} --mm:orc -d:release --threads:on \
+          --nimcache:{{nimcache}}/$(dirname $t)/$(basename $t .nim)_r \
           -o:test-logs/$(basename $t .nim) $t 2>&1 | tee -a test-logs/build.log; \
     done
 
@@ -50,10 +62,10 @@ lint: lint-nim lint-nix
 
 lint-nim:
     @mkdir -p test-logs
-    nim check {{nim-flags}} {{src-paths}} --mm:orc src/nim_libvterm.nim 2>&1 | tee test-logs/lint-nim.log
+    nim check {{nim-flags}} {{src-paths}} --mm:orc --nimcache:{{nimcache}}/src/nim_libvterm_check src/nim_libvterm.nim 2>&1 | tee test-logs/lint-nim.log
     @for t in {{tests}}; do \
       echo "Checking $t"; \
-      nim check {{nim-flags}} {{src-paths}} --mm:orc $t 2>&1 | tee -a test-logs/lint-nim.log; \
+      nim check {{nim-flags}} {{src-paths}} --mm:orc --nimcache:{{nimcache}}/$(dirname $t)/$(basename $t .nim)_check $t 2>&1 | tee -a test-logs/lint-nim.log; \
     done
 
 lint-nix:
@@ -115,6 +127,7 @@ test-asan:
         echo "[asan/$mode] $t"; \
         CC=clang CXX=clang++ \
         nim c {{nim-flags}} {{src-paths}} \
+          --nimcache:{{nimcache}}/$(dirname $t)/$(basename $t .nim)_r \
           --mm:orc -d:$mode -d:useMalloc \
           --cc:clang \
           --passC:-fsanitize=address --passL:-fsanitize=address \
@@ -129,6 +142,7 @@ test-ubsan:
       echo "[ubsan] $t"; \
       CC=clang CXX=clang++ \
       nim c {{nim-flags}} {{src-paths}} \
+        --nimcache:{{nimcache}}/$(dirname $t)/$(basename $t .nim)_r \
         --mm:orc -d:release -d:useMalloc \
         --cc:clang \
         --passC:-fsanitize=undefined --passL:-fsanitize=undefined \
@@ -141,6 +155,7 @@ test-tsan:
       echo "[tsan] $t"; \
       CC=clang CXX=clang++ \
       nim c {{nim-flags}} {{src-paths}} \
+        --nimcache:{{nimcache}}/$(dirname $t)/$(basename $t .nim)_r \
         --mm:orc -d:release -d:useMalloc --threads:on \
         --cc:clang \
         --passC:-fsanitize=thread --passL:-fsanitize=thread \
@@ -153,6 +168,7 @@ test-lsan:
       echo "[lsan] $t"; \
       CC=clang CXX=clang++ \
       nim c {{nim-flags}} {{src-paths}} \
+        --nimcache:{{nimcache}}/$(dirname $t)/$(basename $t .nim)_r \
         --mm:orc -d:release -d:useMalloc \
         --cc:clang \
         --passC:-fsanitize=leak --passL:-fsanitize=leak \
@@ -168,6 +184,7 @@ test-valgrind:
       out=test-logs/valgrind-$(basename $t .nim)
       echo "[valgrind] $t"
       nim c {{nim-flags}} {{src-paths}} \
+        --nimcache:{{nimcache}}/$(dirname $t)/$(basename $t .nim)_r \
         --mm:orc -d:release -d:useMalloc \
         --debugger:native \
         -o:$out $t 2>&1 | tee -a test-logs/valgrind.log
@@ -179,6 +196,7 @@ test-valgrind:
 test-leaks-heavy:
     @mkdir -p test-logs
     nim c {{nim-flags}} {{src-paths}} \
+      --nimcache:{{nimcache}}/tests/test_no_leaks_r \
       --mm:orc -d:release -d:nimLibvtermHeavy \
       -r tests/test_no_leaks.nim 2>&1 | tee test-logs/leaks-heavy.log
 
@@ -189,16 +207,18 @@ test-all: test-arc test-orc test-refc test-threads-off
 # Internal: one matrix cell.  $1=mm, $2=mode, $3=threads
 _matrix mm mode threads:
     @mkdir -p test-logs
-    @for t in {{tests}}; do \
+    @case "{{mode}}" in debug) sfx=_d;; *) sfx=_r;; esac; \
+    for t in {{tests}}; do \
       echo "[{{mm}}/{{mode}}/threads:{{threads}}] $t"; \
       nim c {{nim-flags}} {{src-paths}} \
+        --nimcache:{{nimcache}}/$(dirname $t)/$(basename $t .nim)$sfx \
         --mm:{{mm}} -d:{{mode}} --threads:{{threads}} \
         -r $t 2>&1 | tee -a test-logs/{{mm}}-{{mode}}-threads-{{threads}}.log; \
     done
 
 # Clean test-logs and nim caches -- useful before a fresh CI-style run.
 clean:
-    rm -rf test-logs nim-cache
+    rm -rf test-logs nim-cache .nimcache
     find tests -maxdepth 1 -type f -executable -name "test_*" -not -name "*.nim" -delete
 
 # Benchmarks -- placeholder. Real benchmarks (Sixel decode, Kitty
