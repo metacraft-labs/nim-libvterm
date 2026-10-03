@@ -69,25 +69,29 @@
         {
           checks.pre-commit = preCommit;
           devShells.default = pkgs.mkShell {
-            packages = with pkgs; [
-              nim
-              nimble
-              just
-              nixfmt-rfc-style
-              # Sanitizer-augmented Nim builds need clang on Linux. The
-              # Justfile's `test-asan` recipe expects clang in $PATH.
-              clang
-              # Valgrind for the secondary leak-budget check.
-              valgrind
-              # zlib (headers + lib) -- the production PNG path uses
-              # stb_image which bundles its own inflater, but the test
-              # fixture helper `encodePng` in tests/test_helpers.nim
-              # still wraps libz to *deflate* generated PNG bytes. The
-              # Justfile pushes -I/-L flags through
-              # NIM_LIBVTERM_ZLIB_{INCLUDE,LIB} so the build is hermetic.
-              zlib
-              zlib.dev
-            ];
+            packages =
+              with pkgs;
+              [
+                nim
+                nimble
+                just
+                nixfmt-rfc-style
+                # Sanitizer-augmented Nim builds need clang on Linux. The
+                # Justfile's `test-asan` recipe expects clang in $PATH.
+                clang
+                # zlib (headers + lib) -- the production PNG path uses
+                # stb_image which bundles its own inflater, but the test
+                # fixture helper `encodePng` in tests/test_helpers.nim
+                # still wraps libz to *deflate* generated PNG bytes. The
+                # Justfile pushes -I/-L flags through
+                # NIM_LIBVTERM_ZLIB_{INCLUDE,LIB} so the build is hermetic.
+                zlib
+                zlib.dev
+              ]
+              ++ pkgs.lib.optionals pkgs.stdenv.isLinux [
+                # Valgrind is used by the existing Linux-only leak-budget job.
+                pkgs.valgrind
+              ];
             shellHook = ''
               ${ownRepoOnly preCommit.shellHook}
               export NIM_LIBVTERM_ZLIB_INCLUDE="${pkgs.zlib.dev}/include"
