@@ -30,8 +30,8 @@
 ##   ``src/nim_libvterm.nim`` (consumers ``import nim_libvterm``); the
 ##   submodules under ``src/nim_libvterm/`` (``decoders/png``,
 ##   ``decoders/sixel``, ``extended_state``, ...) are importable too. The
-##   repo ships no ``config.nims`` / ``nim.cfg``, so the ``--path:src``
-##   the ``Justfile`` bakes in is supplied explicitly by the ``paths:``
+##   repo ships ``config.nims``; the ``--path:src`` and test path
+##   the ``Justfile`` uses are supplied explicitly by the ``paths:``
 ##   slot on every test BUILD edge below.
 ## * Emits, per test file under ``tests/``, a BUILD edge
 ##   (``buildNimUnittest.build``) that compiles ``build/test-bin/<stem>``
@@ -47,7 +47,7 @@
 ## matrix point — ``just test`` → ``test-orc`` → ``nim c … --mm:orc
 ## -d:release --threads:on`` (see ``Justfile`` ``_matrix orc release on``
 ## and ``nim-flags``). ``--path:src --path:tests`` is threaded via the
-## edge's ``paths:`` slot (the repo has no ``config.nims`` to supply it);
+## edge's ``paths:`` slot (also recorded with ``config.nims`` as input);
 ## ``-d:release`` via ``defines:``; ``--mm:orc`` via ``mm:``;
 ## ``--threads:on`` via ``threadsOn`` (the wrapper's default). The
 ## ``--passC:-w`` from ``nim-flags`` (silence the vendored libvterm C
@@ -70,12 +70,13 @@
 ## extraction gates: the whole corpus is portable-and-runnable here and
 ## every edge is unconditionally in the graph. (Mirrors what the repo's
 ## own ``just test`` runs — the ``Justfile`` ``tests`` list is exactly
-## these 36 files; the two remaining ``tests/*.nim`` — ``test_helpers.nim``
+## these 39 files; the two remaining ``tests/*.nim`` — ``test_helpers.nim``
 ## and ``fixtures_jpeg_gif.nim`` — are IMPORTED helper modules with no
 ## ``suite``/``test`` body, not standalone tests, so they get no edge.)
 ##
 ## **Tool provisioning.** ``defaultToolProvisioning "path"`` matches the
-## canonical recipes: the nix dev shell puts ``nim`` + ``gcc`` on
+## canonical recipes: the nix dev shell supplies ``nim`` and the actual
+## platform C backend (macOS ``clang`` or other-platform ``gcc``) on
 ## ``PATH``, so the weak-local PATH resolver is the right default.
 ## Without it ``repro build`` refuses to run with "typed tool
 ## provisioning is required for uses declarations".
@@ -105,7 +106,7 @@ type
     binary: string
 
 # The corpus — one entry per ``tests/test_*.nim`` standalone test file.
-# Mirrors the ``Justfile`` ``tests`` list one-for-one (36 files). Every
+# Mirrors the ``Justfile`` ``tests`` list one-for-one (39 files). Every
 # entry compiles + runs to exit 0 on this Linux host (see the module
 # docstring's platform-gating note), so there is a single unconditional
 # list — no per-OS partition.
@@ -188,6 +189,14 @@ const libvtermTestSpecs: seq[LibvtermTestSpec] = @[
   # they don't gate the file out. Runs to exit 0 everywhere.
   LibvtermTestSpec(source: "tests/test_no_leaks.nim",
     binary: "build/test-bin/test_no_leaks"),
+  LibvtermTestSpec(source: "tests/test_gc_traced_inner_block.nim",
+    binary: "build/test-bin/test_gc_traced_inner_block"),
+  LibvtermTestSpec(source: "tests/test_nimcache_is_worktree_local.nim",
+    binary: "build/test-bin/test_nimcache_is_worktree_local"),
+  LibvtermTestSpec(source: "tests/test_utf8_split_across_feeds.nim",
+    binary: "build/test-bin/test_utf8_split_across_feeds"),
+  LibvtermTestSpec(source: "tests/test_wide_glyph_continuation_cell.nim",
+    binary: "build/test-bin/test_wide_glyph_continuation_cell"),
 ]
 
 package nim_libvterm:
@@ -196,14 +205,18 @@ package nim_libvterm:
   uses:
     # Toolchain floor — the PATH-resolvable binaries the build needs.
     # ``nim`` compiles every test binary (the ``buildNimUnittest.build``
-    # edges below); ``gcc`` is the C back-end ``nim c`` shells out to,
+    # edges below); macOS ``clang`` or other-platform ``gcc`` is
+    # the actual C back-end ``nim c`` shells out to,
     # which also compiles the vendored libvterm C sources + the
     # ``nim_shim.c`` bit-field helpers the FFI ``{.compile.}``s. The
     # lower bound mirrors the nimble file's ``requires "nim >= 2.0.0"``;
     # ``gcc >=12`` matches the workspace toolchain floor. Sufficient for
     # the path-mode resolver under ``nix develop``.
     "nim >=2.0"
-    "gcc >=12"
+    when defined(macosx):
+      "clang >=14"
+    else:
+      "gcc >=12"
 
   # Library declaration — the ``src/`` tree is importable when this
   # package is consumed via ``uses: "nim_libvterm"``. The umbrella is
@@ -222,7 +235,7 @@ package nim_libvterm:
     # Compile flags reproduce the repo's default matrix point
     # (``just test`` → ``_matrix orc release on``):
     #   * ``paths = @["src", "tests"]``  — ``--path:src --path:tests``
-    #     (no ``config.nims`` in the repo; the ``Justfile`` supplies these).
+    #     (``config.nims`` also supplies these paths).
     #   * ``defines = @["release"]``     — ``-d:release``.
     #   * ``mm = "orc"``                 — ``--mm:orc``.
     #   * ``threadsOn`` (default true)   — ``--threads:on``.
@@ -245,17 +258,29 @@ package nim_libvterm:
         binary = binary,
         defines = @["release"],
         paths = @["src", "tests"],
+        extraInputs = @["src", "tests", "vendor/libvterm", "config.nims",
+                        "nim_libvterm.nimble"],
         mm = "orc",
         extraPassC = @["-w"],
         actionId = "nim_libvterm.test_build." & stem)
+      when defined(macosx):
+        appendRegisteredActionToolIdentityRefs(edge.action.id, @["clang"])
+      else:
+        appendRegisteredActionToolIdentityRefs(edge.action.id, @["gcc"])
       buildActions.add(edge.action)
       # ``registerImplicitName = false`` because the BUILD edge already
       # owns the binary basename as the implicit target name; the explicit
       # ``actionId`` is the execute edge's selector (mirrors reprobuild's
       # ``repro.nim`` two-edge shape).
+      let runtimeInputs = if source == "tests/test_nimcache_is_worktree_local.nim":
+        @["src", "tests", "vendor/libvterm", "config.nims", "nim_libvterm.nimble"]
+      else: newSeq[string]()
       let executeEdge = edge.testBinary.run(
         actionId = "nim_libvterm.test_execute." & stem,
-        registerImplicitName = false)
+        registerImplicitName = false,
+        extraInputs = runtimeInputs)
+      if source == "tests/test_nimcache_is_worktree_local.nim":
+        appendRegisteredActionToolIdentityRefs(executeEdge.id, @["nim"])
       executeActions.add(executeEdge)
 
     for spec in libvtermTestSpecs:
