@@ -60,6 +60,13 @@
                 enable = true;
                 name = "just lint";
                 entry = "just lint";
+                extraPackages = with pkgs; [
+                  bash
+                  coreutils
+                  just
+                  nim
+                  nixfmt-rfc-style
+                ];
                 language = "system";
                 pass_filenames = false;
               };
@@ -72,6 +79,7 @@
             packages =
               with pkgs;
               [
+                bash
                 nim
                 nimble
                 just

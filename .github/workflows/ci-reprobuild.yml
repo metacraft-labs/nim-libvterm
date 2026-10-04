@@ -63,25 +63,54 @@ jobs:
           private-key: ${{ secrets.CI_TOKEN_PROVIDER_PRIVATE_KEY }}
           owner: metacraft-labs
 
+      - name: Install Nix for the declared Unix shell
+        if: runner.os != 'Windows'
+        uses: metacraft-labs/metacraft-github-actions/setup-nix@dev
+        with:
+          gh-token: ${{ steps.ci_token.outputs.token }}
+
+      - name: Expose the declared non-SIP Bash
+        if: runner.os != 'Windows'
+        run: |
+          set -euo pipefail
+          nix develop --no-update-lock-file --command bash -c '
+            set -euo pipefail
+            shell_path="$(command -v bash)"
+            case "$shell_path" in
+              /nix/store/*/bin/bash) dirname "$shell_path" >> "$GITHUB_PATH" ;;
+              *) echo "Expected declared Nix Bash" >&2; exit 1 ;;
+            esac
+          '
+
       - name: Setup dev env (reprobuild flavor)
-        # setup-dev-env clones the siblings listed in .github/sibling-repos
-        # (codetracer-trace-format, codetracer-trace-format-nim) at the
-        # workspace-lock-pinned revisions before materialising the env.
+        # Source mode supplies the verified CLI and staged Nix helper.
         uses: metacraft-labs/metacraft-github-actions/setup-dev-env@dev
         with:
           env-flavor: reprobuild
+          repro-from-source: ${{ runner.os != 'Windows' && 'true' || 'false' }}
+          repro-build-pin: "76659f5730ecf698b1963c656494d2cb66eb256d"
           gh-token: ${{ steps.ci_token.outputs.token }}
 
+      - name: Assert measured Unix Repro artifacts
+        if: runner.os != 'Windows'
+        run: |
+          set -euo pipefail
+          test "$(git -C .reprobuild-src rev-parse HEAD)" = 76659f5730ecf698b1963c656494d2cb66eb256d
+          test -z "$(git -C .reprobuild-src status --porcelain)"
+          test "$(command -v repro)" = "$GITHUB_WORKSPACE/.reprobuild-src/build/bin/repro"
+          test "${REPROBUILD_NIX_DAEMON_BIN:?missing staged helper}" = "$GITHUB_WORKSPACE/.reprobuild-src/build/bin/reprobuild-nix-daemon"
+          test -x "$REPROBUILD_NIX_DAEMON_BIN"
+          "$REPROBUILD_NIX_DAEMON_BIN" --help
+          printf 'source=%s cli=%s helper=%s\n' "$(git -C .reprobuild-src rev-parse HEAD)" "$(command -v repro)" "$REPROBUILD_NIX_DAEMON_BIN"
+          repro --version
+
       - name: repro build
-        # Builds the conventional `build` collection declared in
-        # `repro.nim`. Verifies the primary shipping artefact (the
-        # recorder binary or extension) materialises through the
-        # reprobuild engine identically to `just build`.
-        run: dev-exec repro build
+        # Build the owning complete 39-module terminal corpus.
+        run: dev-exec repro build ${{ runner.os != 'Windows' && '--tool-provisioning=nix' || '' }}
 
       - name: repro test
         # Materialises the `test` collection.
-        run: dev-exec repro test
+        run: dev-exec repro test ${{ runner.os != 'Windows' && '--tool-provisioning=nix' || '' }}
 
       - name: just build (cross-check)
         # Re-runs the legacy `just build` path inside the same env so
