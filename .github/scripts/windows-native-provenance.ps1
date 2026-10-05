@@ -1,4 +1,16 @@
 $ErrorActionPreference = 'Stop'
+function Get-NativeFileSha256([string]$Path) {
+  $algorithm = [System.Security.Cryptography.SHA256]::Create()
+  $stream = $null
+  try {
+    $stream = [System.IO.File]::OpenRead($Path)
+    return ([BitConverter]::ToString($algorithm.ComputeHash($stream))).Replace('-', '')
+  }
+  finally {
+    if ($null -ne $stream) { $stream.Dispose() }
+    $algorithm.Dispose()
+  }
+}
 $records = @()
 foreach ($name in @('repro','nim','gcc','g++')) {
   $commands = @(Get-Command $name -CommandType Application -All -ErrorAction SilentlyContinue)
@@ -21,18 +33,18 @@ foreach ($name in @('repro','nim','gcc','g++')) {
       foreach ($relative in @('config\nim.cfg','config\config.nims','lib\nimbase.h')) {
         $candidate = Join-Path $candidateRoot $relative
         if (Test-Path -LiteralPath $candidate -PathType Leaf) {
-          $nimFiles += [ordered]@{ path=$candidate; sha256=(Get-FileHash -Algorithm SHA256 -LiteralPath $candidate).Hash }
+          $nimFiles += [ordered]@{ path=$candidate; sha256=(Get-NativeFileSha256 $candidate) }
         }
       }
     }
-    $entries += [ordered]@{ path=$path; sha256=(Get-FileHash -Algorithm SHA256 -LiteralPath $path).Hash; peMachine=$machine; versionExit=$versionExit; versionOutput=$versionOutput; candidateNimFiles=$nimFiles }
+    $entries += [ordered]@{ path=$path; sha256=(Get-NativeFileSha256 $path); peMachine=$machine; versionExit=$versionExit; versionOutput=$versionOutput; candidateNimFiles=$nimFiles }
   }
   $records += [ordered]@{ name=$name; available=($entries.Count -gt 0); executableCandidates=$entries }
 }
 $source = @()
 foreach ($name in @('repro.nim','repro.lock','flake.lock','config.nims','nim.cfg')) {
   if (Test-Path -LiteralPath $name -PathType Leaf) {
-    $source += [ordered]@{ path=$name; sha256=(Get-FileHash -Algorithm SHA256 -LiteralPath $name).Hash }
+    $source += [ordered]@{ path=$name; sha256=(Get-NativeFileSha256 $name) }
   }
 }
 $proof = [ordered]@{ sourceHead=(& git rev-parse HEAD); scope='Ambient dev-exec executable census; action-scoped provisioned identities must be read separately'; executables=$records; sourceFiles=$source }
