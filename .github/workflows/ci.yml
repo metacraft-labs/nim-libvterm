@@ -117,13 +117,13 @@ jobs:
       - name: repro build
         # Build the owning complete 39-module terminal corpus.
         env:
-          REPRO_PROVISIONING_CONTRIBUTOR: ${{ runner.os == 'Linux' && 'libvterm-owning-nim-zlib-sdk' || '' }}
+          REPRO_PROVISIONING_CONTRIBUTOR: ${{ runner.os != 'Windows' && 'libvterm-owning-nim-zlib-sdk' || '' }}
         run: dev-exec repro build ${{ runner.os != 'Windows' && '--tool-provisioning=nix' || '' }}
 
       - name: repro test
         # Materialises the `test` collection.
         env:
-          REPRO_PROVISIONING_CONTRIBUTOR: ${{ runner.os == 'Linux' && 'libvterm-owning-nim-zlib-sdk' || '' }}
+          REPRO_PROVISIONING_CONTRIBUTOR: ${{ runner.os != 'Windows' && 'libvterm-owning-nim-zlib-sdk' || '' }}
         run: dev-exec repro test ${{ runner.os != 'Windows' && '--tool-provisioning=nix' || '' }}
 
       - name: just build (cross-check)

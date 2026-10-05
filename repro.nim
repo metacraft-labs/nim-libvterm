@@ -82,9 +82,12 @@
 ## provisioning is required for uses declarations".
 
 import repro_project_dsl
-when defined(linux):
+when defined(linux) or defined(macosx):
   import repro_dsl_stdlib/packages/nim as canonicalNim
-  import repro_dsl_stdlib/packages/gcc as canonicalBackend
+  when defined(macosx):
+    import repro_dsl_stdlib/packages/clang as canonicalBackend
+  else:
+    import repro_dsl_stdlib/packages/gcc as canonicalBackend
   import repro_dsl_stdlib/packages/bash as canonicalBash
   import libvterm_sdk_contribution
 
@@ -218,7 +221,7 @@ package nim_libvterm:
     # ``gcc >=12`` matches the workspace toolchain floor. Sufficient for
     # the path-mode resolver under ``nix develop``.
     "nim >=2.0"
-    when defined(linux):
+    when defined(linux) or defined(macosx):
       "bash >=4"
     when defined(macosx):
       "clang >=14"
@@ -260,7 +263,7 @@ package nim_libvterm:
       let stem =
         if lastSlash >= 0: binary[lastSlash + 1 .. ^1]
         else: binary
-      let sdkInputs = when defined(linux):
+      let sdkInputs = when defined(linux) or defined(macosx):
         @["libvterm_nim_zlib_sdk.nix", "libvterm_sdk_contribution.nim", "flake.lock"]
       else: newSeq[string]()
       let edge = buildNimUnittest.build(
@@ -277,7 +280,7 @@ package nim_libvterm:
         appendRegisteredActionToolIdentityRefs(edge.action.id, @["clang"])
       else:
         appendRegisteredActionToolIdentityRefs(edge.action.id, @["gcc"])
-      when defined(linux):
+      when defined(linux) or defined(macosx):
         appendRegisteredActionToolIdentityRefs(edge.action.id, @["bash"])
       buildActions.add(edge.action)
       # ``registerImplicitName = false`` because the BUILD edge already
@@ -293,7 +296,7 @@ package nim_libvterm:
         extraInputs = runtimeInputs)
       if source == "tests/test_nimcache_is_worktree_local.nim":
         appendRegisteredActionToolIdentityRefs(executeEdge.id, @["nim"])
-        when defined(linux):
+        when defined(linux) or defined(macosx):
           appendRegisteredActionToolIdentityRefs(executeEdge.id, @["bash"])
       executeActions.add(executeEdge)
 
