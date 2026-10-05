@@ -126,6 +126,11 @@ jobs:
           REPRO_PROVISIONING_CONTRIBUTOR: ${{ runner.os != 'Windows' && 'libvterm-owning-nim-zlib-sdk' || '' }}
         run: dev-exec repro test ${{ runner.os != 'Windows' && '--tool-provisioning=nix' || '' }}
 
+      - name: Bind the action-selected native Windows Nim
+        if: runner.os == 'Windows' && runner.arch == 'X64'
+        shell: pwsh
+        run: ./.github/scripts/bind-selected-native-nim.ps1
+
       - name: just build (cross-check)
         # Re-runs the original `just build` through the owning committed flake so
         # we catch silent divergences between `repro build` outputs
