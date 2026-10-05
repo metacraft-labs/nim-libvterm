@@ -104,6 +104,11 @@ jobs:
           printf 'source=%s cli=%s helper=%s\n' "$(git -C .reprobuild-src rev-parse HEAD)" "$(command -v repro)" "$REPROBUILD_NIX_DAEMON_BIN"
           repro --version
 
+      - name: Provision the owning native Windows x64 SDK
+        if: runner.os == 'Windows' && matrix.arch == 'x64'
+        shell: pwsh
+        run: ./.github/scripts/windows-native-compiler-sdk.ps1
+
       - name: Record native Windows executable provenance
         if: runner.os == 'Windows'
         shell: pwsh
@@ -111,20 +116,24 @@ jobs:
 
       - name: repro build
         # Build the owning complete 39-module terminal corpus.
+        env:
+          REPRO_PROVISIONING_CONTRIBUTOR: ${{ runner.os == 'Linux' && 'libvterm-owning-nim-zlib-sdk' || '' }}
         run: dev-exec repro build ${{ runner.os != 'Windows' && '--tool-provisioning=nix' || '' }}
 
       - name: repro test
         # Materialises the `test` collection.
+        env:
+          REPRO_PROVISIONING_CONTRIBUTOR: ${{ runner.os == 'Linux' && 'libvterm-owning-nim-zlib-sdk' || '' }}
         run: dev-exec repro test ${{ runner.os != 'Windows' && '--tool-provisioning=nix' || '' }}
 
       - name: just build (cross-check)
-        # Re-runs the legacy `just build` path inside the same env so
+        # Re-runs the original `just build` through the owning committed flake so
         # we catch silent divergences between `repro build` outputs
         # and what the dev shell + Justfile produce today.
-        run: dev-exec just build
+        run: ${{ runner.os != 'Windows' && 'nix develop . --no-update-lock-file --command just build' || 'dev-exec just build' }}
 
       - name: just test (cross-check)
-        run: dev-exec just test
+        run: ${{ runner.os != 'Windows' && 'nix develop . --no-update-lock-file --command just test' || 'dev-exec just test' }}
 
       # Diagnostics on failure. Three things below are load-bearing:
       #
