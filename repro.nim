@@ -82,6 +82,11 @@
 ## provisioning is required for uses declarations".
 
 import repro_project_dsl
+when defined(linux):
+  import repro_dsl_stdlib/packages/nim as canonicalNim
+  import repro_dsl_stdlib/packages/gcc as canonicalBackend
+  import repro_dsl_stdlib/packages/bash as canonicalBash
+  import libvterm_sdk_contribution
 
 # ``ct_test_nim_unittest`` supplies the ``buildNimUnittest.build(...)``
 # typed-tool used by every test BUILD edge below, and the
@@ -213,6 +218,8 @@ package nim_libvterm:
     # ``gcc >=12`` matches the workspace toolchain floor. Sufficient for
     # the path-mode resolver under ``nix develop``.
     "nim >=2.0"
+    when defined(linux):
+      "bash >=4"
     when defined(macosx):
       "clang >=14"
     else:
@@ -253,13 +260,16 @@ package nim_libvterm:
       let stem =
         if lastSlash >= 0: binary[lastSlash + 1 .. ^1]
         else: binary
+      let sdkInputs = when defined(linux):
+        @["libvterm_nim_zlib_sdk.nix", "libvterm_sdk_contribution.nim", "flake.lock"]
+      else: newSeq[string]()
       let edge = buildNimUnittest.build(
         source = source,
         binary = binary,
         defines = @["release"],
         paths = @["src", "tests"],
         extraInputs = @["src", "tests", "vendor/libvterm", "config.nims",
-                        "nim_libvterm.nimble"],
+                        "nim_libvterm.nimble"] & sdkInputs,
         mm = "orc",
         extraPassC = @["-w"],
         actionId = "nim_libvterm.test_build." & stem)
@@ -267,13 +277,15 @@ package nim_libvterm:
         appendRegisteredActionToolIdentityRefs(edge.action.id, @["clang"])
       else:
         appendRegisteredActionToolIdentityRefs(edge.action.id, @["gcc"])
+      when defined(linux):
+        appendRegisteredActionToolIdentityRefs(edge.action.id, @["bash"])
       buildActions.add(edge.action)
       # ``registerImplicitName = false`` because the BUILD edge already
       # owns the binary basename as the implicit target name; the explicit
       # ``actionId`` is the execute edge's selector (mirrors reprobuild's
       # ``repro.nim`` two-edge shape).
       let runtimeInputs = if source == "tests/test_nimcache_is_worktree_local.nim":
-        @["src", "tests", "vendor/libvterm", "config.nims", "nim_libvterm.nimble"]
+        @["src", "tests", "vendor/libvterm", "config.nims", "nim_libvterm.nimble"] & sdkInputs
       else: newSeq[string]()
       let executeEdge = edge.testBinary.run(
         actionId = "nim_libvterm.test_execute." & stem,
@@ -281,6 +293,8 @@ package nim_libvterm:
         extraInputs = runtimeInputs)
       if source == "tests/test_nimcache_is_worktree_local.nim":
         appendRegisteredActionToolIdentityRefs(executeEdge.id, @["nim"])
+        when defined(linux):
+          appendRegisteredActionToolIdentityRefs(executeEdge.id, @["bash"])
       executeActions.add(executeEdge)
 
     for spec in libvtermTestSpecs:

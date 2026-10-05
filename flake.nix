@@ -2,6 +2,10 @@
   description = "nim-libvterm - libvterm bindings + Screen API + extended-state overlay for Nim";
 
   inputs = {
+    standard-hooks-src = {
+      url = "github:metacraft-labs/devops-modules/c8ef41d446e211892fe9775182b43d5d517554ac";
+      flake = false;
+    };
     nixos-modules.url = "github:metacraft-labs/devops-modules";
     nixpkgs.follows = "nixos-modules/nixpkgs-unstable";
     flake-parts.follows = "nixos-modules/flake-parts";
@@ -51,10 +55,14 @@
             unset _own_repo_root
           '';
 
+          standardHooks = import (inputs.standard-hooks-src + "/git-hooks/standard-hooks.nix") {
+            inherit pkgs;
+            lib = pkgs.lib;
+            src = inputs.standard-hooks-src;
+          };
           preCommit = git-hooks.lib.${system}.run {
             src = ./.;
-            hooks = {
-              check-added-large-files.enable = true;
+            hooks = standardHooks // {
               check-merge-conflicts.enable = true;
               lint = {
                 enable = true;
@@ -96,6 +104,11 @@
                 zlib
                 zlib.dev
               ]
+              ++ [
+                pkgs.pre-commit
+                pkgs.python3
+              ]
+              ++ preCommit.enabledPackages
               ++ pkgs.lib.optionals pkgs.stdenv.isLinux [
                 # Valgrind is used by the existing Linux-only leak-budget job.
                 pkgs.valgrind

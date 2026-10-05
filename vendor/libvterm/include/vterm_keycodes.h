@@ -7,7 +7,7 @@ typedef enum {
   VTERM_MOD_ALT   = 0x02,
   VTERM_MOD_CTRL  = 0x04,
 
-  VTERM_ALL_MODS_MASK = 0x07 
+  VTERM_ALL_MODS_MASK = 0x07
 } VTermModifier;
 
 typedef enum {

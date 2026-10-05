@@ -1,0 +1,29 @@
+root = true
+
+[*]
+charset = utf-8
+end_of_line = lf
+insert_final_newline = true
+trim_trailing_whitespace = true
+indent_style = space
+indent_size = 2
+
+[*.md]
+trim_trailing_whitespace = false
+indent_size = unset
+
+[*.nim]
+indent_size = unset
+
+[.github/workflows/*.yml]
+end_of_line = crlf
+
+[src/nim_libvterm/c/stb_image.h]
+indent_size = unset
+
+# Preserve the pinned upstream C source and CODE-MAP indentation.
+[vendor/libvterm/{src,include}/*.{c,h}]
+indent_size = unset
+
+[vendor/libvterm/CODE-MAP]
+indent_size = unset
