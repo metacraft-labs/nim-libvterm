@@ -6,4 +6,4 @@ optimal = false
 inputs_digest = "fnv1a64:f70a8f2c688c1432"
 variants = []
 packages = [{ name = "bash", version = "4.0.0", source = "bash", selection = "selected" }, { name = "gcc", version = "12.0.0", source = "gcc", selection = "selected" }, { name = "nim", version = "2.0.0", source = "nim", selection = "selected" }, { name = "nim_libvterm", version = "0.1.0", source = "nim_libvterm", selection = "selected" }]
-deps = [{ name = "nim-libvterm", path = ".", coord_kind = "vcs", url = "https://github.com/metacraft-labs/nim-libvterm", ref = "agents-to-dev-2026-10-03", revision = "213bb18d0a27a30af160b4b6f386a329291dc05c", integrity = "git-sha1:213bb18d0a27a30af160b4b6f386a329291dc05c", version = "", visibility = "public", participation = "", depends = "", tags = "" }]
+deps = [{ name = "nim-libvterm", path = ".", coord_kind = "vcs", url = "https://github.com/metacraft-labs/nim-libvterm", ref = "agents-to-dev-2026-10-03", revision = "5887529bd6af1fedeb67f1691f8cffab31c302af", integrity = "git-sha1:5887529bd6af1fedeb67f1691f8cffab31c302af", version = "", visibility = "public", participation = "", depends = "", tags = "" }]
