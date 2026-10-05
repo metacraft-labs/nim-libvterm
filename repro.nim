@@ -265,6 +265,18 @@ package nim_libvterm:
         else: binary
       let sdkInputs = when defined(linux) or defined(macosx):
         @["libvterm_nim_zlib_sdk.nix", "libvterm_sdk_contribution.nim", "flake.lock"]
+      elif defined(windows):
+        @["build/windows-zlib-sdk/include/zlib.h",
+          "build/windows-zlib-sdk/include/zconf.h",
+          "build/windows-zlib-sdk/lib/libz.a",
+          "build/windows-zlib-sdk/identity.json",
+          ".github/scripts/windows-native-compiler-sdk.ps1", "flake.lock"]
+      else: newSeq[string]()
+      let zlibPassC = when defined(windows):
+        @["-Ibuild/windows-zlib-sdk/include"]
+      else: newSeq[string]()
+      let zlibPassL = when defined(windows):
+        @["-Lbuild/windows-zlib-sdk/lib"]
       else: newSeq[string]()
       let edge = buildNimUnittest.build(
         source = source,
@@ -274,7 +286,8 @@ package nim_libvterm:
         extraInputs = @["src", "tests", "vendor/libvterm", "config.nims",
                         "nim_libvterm.nimble"] & sdkInputs,
         mm = "orc",
-        extraPassC = @["-w"],
+        extraPassC = @["-w"] & zlibPassC,
+        extraPassL = zlibPassL,
         actionId = "nim_libvterm.test_build." & stem)
       when defined(macosx):
         appendRegisteredActionToolIdentityRefs(edge.action.id, @["clang"])

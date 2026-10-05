@@ -69,7 +69,65 @@ if ($justOffset -lt 0 -or $justOffset + 6 -gt $justBytes.Length -or [BitConverte
 $justVersion = (& $justExe --version).Trim()
 if ($LASTEXITCODE -ne 0 -or $justVersion -ne 'just 1.51.0') { throw 'Wrong native just version' }
 $justIdentity = [ordered]@{ path=$justExe; sha256=(Get-FileHash -LiteralPath $justExe -Algorithm SHA256).Hash; peMachine='0x8664'; version=$justVersion; archiveSha256=$justArchiveSha256 }
+# Build the owning locked Zlib source with the same verified native compiler.
+$zlibArchive = Join-Path $root 'zlib-1.3.2.tar.gz'
+Invoke-WebRequest -Uri 'https://github.com/madler/zlib/releases/download/v1.3.2/zlib-1.3.2.tar.gz' -OutFile $zlibArchive
+Assert-FileSha256 -Path $zlibArchive -Expected 'bb329a0a2cd0274d05519d61c667c062e06990d72e125ee2dfa8de64f0119d16'
+$zlibSourceRoot = Join-Path $root 'zlib-source'
+New-Item -ItemType Directory -Path $zlibSourceRoot | Out-Null
+$tarExe = Get-WindowsTarExe
+& $tarExe -xzf $zlibArchive -C $zlibSourceRoot
+if ($LASTEXITCODE -ne 0) { throw 'Owning Zlib source extraction failed' }
+$zlibSource = Join-Path $zlibSourceRoot 'zlib-1.3.2'
+$makeExe = Join-Path $bin 'mingw32-make.exe'
+$arExe = Join-Path $bin 'ar.exe'
+$objdumpExe = Join-Path $bin 'objdump.exe'
+foreach ($tool in @($makeExe, $arExe, $objdumpExe)) {
+  if (-not (Test-Path -LiteralPath $tool -PathType Leaf)) { throw "Missing native Zlib build tool: $tool" }
+  $bytes = [System.IO.File]::ReadAllBytes($tool)
+  if ($bytes.Length -lt 64 -or $bytes[0] -ne 77 -or $bytes[1] -ne 90) { throw "Invalid Zlib build tool PE: $tool" }
+  $offset = [BitConverter]::ToInt32($bytes, 60)
+  if ($offset -lt 0 -or $offset + 6 -gt $bytes.Length -or [BitConverter]::ToUInt32($bytes, $offset) -ne 17744 -or [BitConverter]::ToUInt16($bytes, $offset + 4) -ne 34404) { throw "Non-AMD64 Zlib build tool: $tool" }
+}
+$makeVersion = (& $makeExe '--version' | Out-String).Trim()
+if ($LASTEXITCODE -ne 0 -or $makeVersion -notmatch '^GNU Make ') { throw 'Invalid native GNU make version identity' }
+$arVersion = (& $arExe '--version' | Out-String).Trim()
+if ($LASTEXITCODE -ne 0 -or $arVersion -notmatch '^GNU ar ') { throw 'Invalid native GNU ar version identity' }
+Assert-FileSha256 -Path (Join-Path $zlibSource 'win32/Makefile.gcc') -Expected '71135ef48a9fcea23c3946b5b7f41ae866e248b1c1e20fd580045a593054c39f'
+Push-Location $zlibSource
+try {
+  & $makeExe '-f' 'win32/Makefile.gcc' 'libz.a' ('CC="' + (Join-Path $bin 'gcc.exe').Replace('\', '/') + '"') ('AR="' + $arExe.Replace('\', '/') + '"')
+  if ($LASTEXITCODE -ne 0) { throw 'Original upstream Zlib static target failed' }
+} finally { Pop-Location }
+$zlibSdk = Join-Path $env:GITHUB_WORKSPACE 'build/windows-zlib-sdk'
+if (Test-Path -LiteralPath $zlibSdk) { throw 'Refusing to replace an existing Zlib SDK output' }
+$zlibInclude = Join-Path $zlibSdk 'include'
+$zlibLibrary = Join-Path $zlibSdk 'lib'
+New-Item -ItemType Directory -Path $zlibInclude, $zlibLibrary | Out-Null
+Copy-Item -LiteralPath (Join-Path $zlibSource 'zlib.h'), (Join-Path $zlibSource 'zconf.h') -Destination $zlibInclude
+Copy-Item -LiteralPath (Join-Path $zlibSource 'libz.a') -Destination $zlibLibrary
+$objectFormats = (& $objdumpExe '-f' (Join-Path $zlibLibrary 'libz.a') | Out-String)
+if ($LASTEXITCODE -ne 0) { throw 'Owning Zlib static object inspection failed' }
+$formats = [regex]::Matches($objectFormats, 'file format ([^\s]+)')
+if ($formats.Count -eq 0) { throw 'Owning Zlib static archive contains no verified objects' }
+foreach ($format in $formats) { if ($format.Groups[1].Value -ne 'pe-x86-64') { throw 'Non-AMD64 Zlib static object' } }
+$zlibProbe = Join-Path $root 'zlib_probe.c'
+$zlibBinary = Join-Path $root 'zlib_probe.exe'
+[System.IO.File]::WriteAllText($zlibProbe, "#include <zlib.h>`n#include <string.h>`nint main(void) { unsigned char out[128], back[128]; uLongf n=128, m=128; const unsigned char text[]=`"own-zlib-roundtrip`"; if(strcmp(zlibVersion(),`"1.3.2`")) return 1; if(compress(out,&n,text,sizeof(text))) return 2; if(uncompress(back,&m,out,n)) return 3; return m!=sizeof(text)||memcmp(text,back,m); }`n")
+& (Join-Path $bin 'gcc.exe') $zlibProbe "-I$zlibInclude" "-L$zlibLibrary" '-lz' '-o' $zlibBinary
+if ($LASTEXITCODE -ne 0) { throw 'Owning Zlib header/link probe failed' }
+& $zlibBinary
+if ($LASTEXITCODE -ne 0) { throw 'Owning Zlib native roundtrip failed' }
+$zlibFiles = [ordered]@{}
+foreach ($relative in @('include/zlib.h', 'include/zconf.h', 'lib/libz.a')) {
+  $zlibFiles[$relative] = (Get-FileHash -LiteralPath (Join-Path $zlibSdk $relative) -Algorithm SHA256).Hash
+}
+$zlibIdentity = [ordered]@{ sourceSha256='bb329a0a2cd0274d05519d61c667c062e06990d72e125ee2dfa8de64f0119d16'; sourceVersion='1.3.2'; files=$zlibFiles; makePath=$makeExe; makeVersion=$makeVersion; arVersion=$arVersion; makeSha256=(Get-FileHash -LiteralPath $makeExe -Algorithm SHA256).Hash; arPath=$arExe; arSha256=(Get-FileHash -LiteralPath $arExe -Algorithm SHA256).Hash; objectFormats=$objectFormats; objdumpPath=$objdumpExe; objdumpSha256=(Get-FileHash -LiteralPath $objdumpExe -Algorithm SHA256).Hash; tarPath=$tarExe; tarSha256=(Get-FileHash -LiteralPath $tarExe -Algorithm SHA256).Hash; probeSha256=(Get-FileHash -LiteralPath $zlibBinary -Algorithm SHA256).Hash }
+$zlibIdentity | ConvertTo-Json -Depth 8 | Set-Content -Encoding UTF8 -LiteralPath (Join-Path $zlibSdk 'identity.json')
+Add-Content -LiteralPath $env:GITHUB_ENV -Value "NIM_LIBVTERM_ZLIB_INCLUDE=$zlibInclude"
+Add-Content -LiteralPath $env:GITHUB_ENV -Value "NIM_LIBVTERM_ZLIB_LIB=$zlibLibrary"
 $proof = [ordered]@{ immutableSource=$revision; sourceHashes=$files; root=$root; archiveSha256=$pin['GCC_WINLIBS_SHA256']; compilers=$records; just=$justIdentity; nativeProbeSha256=(Get-FileHash -LiteralPath $binary -Algorithm SHA256).Hash; nativeProbeOutput=$output; scope='Native compiler provisioning; original monitored actions remain required' }
+$proof['zlib'] = $zlibIdentity
 $directory = Join-Path $env:GITHUB_WORKSPACE '.repro\windows-native-provenance'
 New-Item -ItemType Directory -Force -Path $directory | Out-Null
 $proof | ConvertTo-Json -Depth 8 | Set-Content -Encoding UTF8 -LiteralPath (Join-Path $directory 'native-compiler-sdk.json')
