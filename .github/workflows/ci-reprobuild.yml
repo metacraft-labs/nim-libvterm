@@ -104,6 +104,11 @@ jobs:
           printf 'source=%s cli=%s helper=%s\n' "$(git -C .reprobuild-src rev-parse HEAD)" "$(command -v repro)" "$REPROBUILD_NIX_DAEMON_BIN"
           repro --version
 
+      - name: Record native Windows executable provenance
+        if: runner.os == 'Windows'
+        shell: pwsh
+        run: dev-exec powershell -NoProfile -NonInteractive -ExecutionPolicy Bypass -File .github/scripts/windows-native-provenance.ps1
+
       - name: repro build
         # Build the owning complete 39-module terminal corpus.
         run: dev-exec repro build ${{ runner.os != 'Windows' && '--tool-provisioning=nix' || '' }}
@@ -150,6 +155,11 @@ jobs:
       # fails earlier than x64, and x64 fails for an unrelated project-level reason
       # (`cannot open file: results`, codetracer_ct_print.nim(24, 8)). These
       # artifacts are the only way to find out why any of it actually fails.
+      - name: Original native build comparison after Windows failure
+        if: failure() && runner.os == 'Windows'
+        # Supplementary comparison only; the original monitored failure remains.
+        run: dev-exec just build
+
       - name: Upload logs on failure
         if: failure()
         uses: actions/upload-artifact@v4
@@ -157,6 +167,9 @@ jobs:
           name: reprobuild-logs-${{ matrix.os }}-${{ matrix.arch }}
           path: |
             .repro/build/*/build-failure-report.json
+            .repro/windows-native-provenance/*.json
+            .repro/build/*/*-tool-identities.inspect.json
+            build/nimcache/**/*.json
             .repro/build/*/build-engine-cache/actions/
           include-hidden-files: true
           retention-days: 7
