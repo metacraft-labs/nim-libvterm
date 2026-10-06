@@ -83,6 +83,7 @@ jobs:
           '
 
       - name: Setup dev env (reprobuild flavor)
+        id: source_setup
         # Source mode supplies the verified CLI and staged Nix helper.
         uses: metacraft-labs/metacraft-github-actions/setup-dev-env@dev
         with:
@@ -90,6 +91,20 @@ jobs:
           repro-from-source: ${{ runner.os != 'Windows' && 'true' || 'false' }}
           repro-build-pin: "76659f5730ecf698b1963c656494d2cb66eb256d"
           gh-token: ${{ steps.ci_token.outputs.token }}
+
+      - name: Collect failed Linux ARM bootstrap resource scope
+        if: failure() && matrix.os == 'linux' && matrix.arch == 'arm64' && steps.source_setup.outcome == 'failure'
+        shell: bash
+        run: bash .github/scripts/linux-arm-bootstrap-resource-receipt.sh
+
+      - name: Upload failed Linux ARM bootstrap resource scope
+        if: failure() && matrix.os == 'linux' && matrix.arch == 'arm64' && steps.source_setup.outcome == 'failure'
+        uses: actions/upload-artifact@v4
+        with:
+          name: linux-arm-bootstrap-resource-scope
+          path: .repro-bootstrap-resource/
+          if-no-files-found: error
+          include-hidden-files: true
 
       - name: Assert measured Unix Repro artifacts
         if: runner.os != 'Windows'
