@@ -223,8 +223,9 @@ proc innerOf(user: pointer): ptr ScreenInner {.inline.} =
   # passed and the type is fixed by the wrapper.
   cast[ptr ScreenInner](user)
 
-proc settermPropThunk(prop: cint; val: ptr VTermValue;
+proc settermPropThunk(nativeProp: VTermProp; val: ptr VTermValue;
                       user: pointer): cint {.cdecl.} =
+  let prop = cint(nativeProp)
   let inner = innerOf(user)
   if val == nil: return 0
   if prop == VTERM_PROP_CURSORVISIBLE:
@@ -283,12 +284,13 @@ proc fallbackOscThunk(command: cint; frag: VTermStringFragment;
             int(pos.row), int(pos.col))
   result = 1
 
-proc fallbackDcsThunk(command: cstring; commandlen: csize_t;
+proc fallbackDcsThunk(nativeCommand: VTermConstCharPtr; commandlen: csize_t;
                       frag: VTermStringFragment;
                       user: pointer): cint {.cdecl.} =
   ## State-layer DCS fallback. libvterm itself only consumes
   ## `\x1bP$q...` (status-string queries); every other DCS -- including
   ## Sixel (final byte `q`) -- is routed here.
+  let command = cstring(nativeCommand)
   let inner = innerOf(user)
   var pos: VTermPos
   let state = vterm_obtain_state(inner.vt.p)

@@ -7,5 +7,6 @@ nim-cache/
 *.exe
 tests/test_*
 !tests/test_*.nim
+!tests/*.sh
 .direnv/
 .pre-commit-config.yaml

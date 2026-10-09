@@ -277,29 +277,30 @@ const
 # All function pointers use the C calling convention. Each callback returns
 # `cint` (truthy = "I handled it; do not pass to fallbacks").
 
-## Callback struct layouts.
-##
-## We define these as plain Nim records (NOT `importc, header:`) because
-## libvterm declares the `prop` and `attr` arguments using its own enum
-## types (`VTermProp`, `VTermAttr`). Nim's enum-vs-cint compatibility
-## fights with `header:` imports here and the resulting C code wouldn't
-## compile without warning suppression. The layout is "N function
-## pointers in declaration order" -- ABI-compatible by construction.
-##
-## We pass these by `addr ourStruct` to setter procs that take
-## `ptr VTermStateCallbacks` etc. as a `pointer`-equivalent.
+## Callback structs retain the existing upstream legacy prefix layout.
+## Function parameters use imported C enum and const-pointer types so each
+## generated callback prototype matches vterm.h, including Clang function
+## sanitizer type identity. Ordinary typed value conversions happen only
+## inside callback bodies; no function-pointer casts or suppressions are used.
 
 type
+  VTermAttr* {.importc: "VTermAttr", header: "vterm.h".} = distinct cint
+  VTermProp* {.importc: "VTermProp", header: "vterm.h".} = distinct cint
+  VTermConstCharPtr* {.importc: "const char *", header: "vterm.h".} = distinct cstring
+  VTermConstLongPtr* {.importc: "const long *", header: "vterm.h".} = distinct ptr UncheckedArray[clong]
+  VTermConstLineInfoPtr* {.importc: "const VTermLineInfo *", header: "vterm.h".} = distinct ptr VTermLineInfo
+  VTermConstScreenCellPtr* {.importc: "const VTermScreenCell *", header: "vterm.h".} = distinct ptr VTermScreenCellRaw
+
   VTermParserCallbacks* {.bycopy.} = object
-    text*: proc (bytes: cstring; len: csize_t; user: pointer): cint {.cdecl.}
+    text*: proc (bytes: VTermConstCharPtr; len: csize_t; user: pointer): cint {.cdecl.}
     control*: proc (control: uint8; user: pointer): cint {.cdecl.}
-    escape*: proc (bytes: cstring; len: csize_t; user: pointer): cint {.cdecl.}
-    csi*: proc (leader: cstring; args: ptr UncheckedArray[clong];
-                argcount: cint; intermed: cstring; command: cchar;
+    escape*: proc (bytes: VTermConstCharPtr; len: csize_t; user: pointer): cint {.cdecl.}
+    csi*: proc (leader: VTermConstCharPtr; args: VTermConstLongPtr;
+                argcount: cint; intermed: VTermConstCharPtr; command: cchar;
                 user: pointer): cint {.cdecl.}
     osc*: proc (command: cint; frag: VTermStringFragment;
                 user: pointer): cint {.cdecl.}
-    dcs*: proc (command: cstring; commandlen: csize_t;
+    dcs*: proc (command: VTermConstCharPtr; commandlen: csize_t;
                 frag: VTermStringFragment; user: pointer): cint {.cdecl.}
     apc*: proc (frag: VTermStringFragment; user: pointer): cint {.cdecl.}
     pm*: proc (frag: VTermStringFragment; user: pointer): cint {.cdecl.}
@@ -317,14 +318,14 @@ type
     erase*: proc (rect: VTermRect; selective: cint;
                   user: pointer): cint {.cdecl.}
     initpen*: proc (user: pointer): cint {.cdecl.}
-    setpenattr*: proc (attr: cint; val: ptr VTermValue;
+    setpenattr*: proc (attr: VTermAttr; val: ptr VTermValue;
                        user: pointer): cint {.cdecl.}
-    settermprop*: proc (prop: cint; val: ptr VTermValue;
+    settermprop*: proc (prop: VTermProp; val: ptr VTermValue;
                         user: pointer): cint {.cdecl.}
     bell*: proc (user: pointer): cint {.cdecl.}
     resize*: proc (rows, cols: cint; fields: ptr VTermStateFields;
                    user: pointer): cint {.cdecl.}
-    setlineinfo*: proc (row: cint; newinfo, oldinfo: ptr VTermLineInfo;
+    setlineinfo*: proc (row: cint; newinfo, oldinfo: VTermConstLineInfoPtr;
                         user: pointer): cint {.cdecl.}
     sbClear*: proc (user: pointer): cint {.cdecl.}
 
@@ -333,11 +334,11 @@ type
     moverect*: proc (dest, src: VTermRect; user: pointer): cint {.cdecl.}
     movecursor*: proc (pos, oldpos: VTermPos; visible: cint;
                        user: pointer): cint {.cdecl.}
-    settermprop*: proc (prop: cint; val: ptr VTermValue;
+    settermprop*: proc (prop: VTermProp; val: ptr VTermValue;
                         user: pointer): cint {.cdecl.}
     bell*: proc (user: pointer): cint {.cdecl.}
     resize*: proc (rows, cols: cint; user: pointer): cint {.cdecl.}
-    sbPushline*: proc (cols: cint; cells: ptr VTermScreenCellRaw;
+    sbPushline*: proc (cols: cint; cells: VTermConstScreenCellPtr;
                        user: pointer): cint {.cdecl.}
     sbPopline*: proc (cols: cint; cells: ptr VTermScreenCellRaw;
                       user: pointer): cint {.cdecl.}
@@ -345,12 +346,12 @@ type
 
   VTermStateFallbacks* {.bycopy.} = object
     control*: proc (control: uint8; user: pointer): cint {.cdecl.}
-    csi*: proc (leader: cstring; args: ptr UncheckedArray[clong];
-                argcount: cint; intermed: cstring; command: cchar;
+    csi*: proc (leader: VTermConstCharPtr; args: VTermConstLongPtr;
+                argcount: cint; intermed: VTermConstCharPtr; command: cchar;
                 user: pointer): cint {.cdecl.}
     osc*: proc (command: cint; frag: VTermStringFragment;
                 user: pointer): cint {.cdecl.}
-    dcs*: proc (command: cstring; commandlen: csize_t;
+    dcs*: proc (command: VTermConstCharPtr; commandlen: csize_t;
                 frag: VTermStringFragment; user: pointer): cint {.cdecl.}
     apc*: proc (frag: VTermStringFragment; user: pointer): cint {.cdecl.}
     pm*: proc (frag: VTermStringFragment; user: pointer): cint {.cdecl.}

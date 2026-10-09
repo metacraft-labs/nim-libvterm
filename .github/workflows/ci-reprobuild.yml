@@ -63,34 +63,103 @@ jobs:
           private-key: ${{ secrets.CI_TOKEN_PROVIDER_PRIVATE_KEY }}
           owner: metacraft-labs
 
+      - name: Install Nix for the declared Unix shell
+        if: runner.os != 'Windows'
+        uses: metacraft-labs/metacraft-github-actions/setup-nix@dev
+        with:
+          gh-token: ${{ steps.ci_token.outputs.token }}
+
+      - name: Expose the declared non-SIP Bash
+        if: runner.os != 'Windows'
+        run: |
+          set -euo pipefail
+          nix develop --no-update-lock-file --command bash -c '
+            set -euo pipefail
+            shell_path="$(command -v bash)"
+            case "$shell_path" in
+              /nix/store/*/bin/bash) dirname "$shell_path" >> "$GITHUB_PATH" ;;
+              *) echo "Expected declared Nix Bash" >&2; exit 1 ;;
+            esac
+          '
+
       - name: Setup dev env (reprobuild flavor)
-        # setup-dev-env clones the siblings listed in .github/sibling-repos
-        # (codetracer-trace-format, codetracer-trace-format-nim) at the
-        # workspace-lock-pinned revisions before materialising the env.
+        id: source_setup
+        # Source mode supplies the verified CLI and staged Nix helper.
         uses: metacraft-labs/metacraft-github-actions/setup-dev-env@dev
         with:
           env-flavor: reprobuild
+          repro-from-source: ${{ runner.os != 'Windows' && 'true' || 'false' }}
+          repro-build-pin: "76659f5730ecf698b1963c656494d2cb66eb256d"
           gh-token: ${{ steps.ci_token.outputs.token }}
 
+      - name: Collect failed Linux ARM bootstrap resource scope
+        if: failure() && matrix.os == 'linux' && matrix.arch == 'arm64' && steps.source_setup.outcome == 'failure'
+        shell: bash
+        run: bash .github/scripts/linux-arm-bootstrap-resource-receipt.sh
+
+      - name: Upload failed Linux ARM bootstrap resource scope
+        if: failure() && matrix.os == 'linux' && matrix.arch == 'arm64' && steps.source_setup.outcome == 'failure'
+        uses: actions/upload-artifact@v4
+        with:
+          name: linux-arm-bootstrap-resource-scope
+          path: .repro-bootstrap-resource/
+          if-no-files-found: error
+          include-hidden-files: true
+
+      - name: Assert measured Unix Repro artifacts
+        if: runner.os != 'Windows'
+        run: |
+          set -euo pipefail
+          test "$(git -C .reprobuild-src rev-parse HEAD)" = 76659f5730ecf698b1963c656494d2cb66eb256d
+          test -z "$(git -C .reprobuild-src status --porcelain)"
+          test "$(command -v repro)" = "$GITHUB_WORKSPACE/.reprobuild-src/build/bin/repro"
+          test "${REPROBUILD_NIX_DAEMON_BIN:?missing staged helper}" = "$GITHUB_WORKSPACE/.reprobuild-src/build/bin/reprobuild-nix-daemon"
+          test -x "$REPROBUILD_NIX_DAEMON_BIN"
+          "$REPROBUILD_NIX_DAEMON_BIN" --help
+          printf 'source=%s cli=%s helper=%s\n' "$(git -C .reprobuild-src rev-parse HEAD)" "$(command -v repro)" "$REPROBUILD_NIX_DAEMON_BIN"
+          repro --version
+
+      - name: Provision the owning native Windows x64 SDK
+        if: runner.os == 'Windows' && matrix.arch == 'x64'
+        shell: pwsh
+        run: ./.github/scripts/windows-native-compiler-sdk.ps1
+
+      - name: Provision the owning native Windows ARM64 SDK
+        if: runner.os == 'Windows' && matrix.arch == 'arm64'
+        shell: pwsh
+        run: |
+          ./ci/windows-native-arm-sdk.ps1 -OwnedPathHelper ./ci/native-python-owned-path.ps1 -SourceRoot "$env:GITHUB_WORKSPACE" -SourceRevision '${{ github.sha }}'
+
+      - name: Record native Windows executable provenance
+        if: runner.os == 'Windows'
+        shell: pwsh
+        run: dev-exec powershell -NoProfile -NonInteractive -ExecutionPolicy Bypass -File .github/scripts/windows-native-provenance.ps1
+
       - name: repro build
-        # Builds the conventional `build` collection declared in
-        # `repro.nim`. Verifies the primary shipping artefact (the
-        # recorder binary or extension) materialises through the
-        # reprobuild engine identically to `just build`.
-        run: dev-exec repro build
+        # Build the owning complete 39-module terminal corpus.
+        env:
+          REPRO_PROVISIONING_CONTRIBUTOR: ${{ runner.os != 'Windows' && 'libvterm-owning-nim-zlib-sdk' || '' }}
+        run: dev-exec repro build ${{ runner.os != 'Windows' && '--tool-provisioning=nix' || (matrix.arch == 'arm64' && '--tool-provisioning=path' || '') }}
 
       - name: repro test
         # Materialises the `test` collection.
-        run: dev-exec repro test
+        env:
+          REPRO_PROVISIONING_CONTRIBUTOR: ${{ runner.os != 'Windows' && 'libvterm-owning-nim-zlib-sdk' || '' }}
+        run: dev-exec repro test ${{ runner.os != 'Windows' && '--tool-provisioning=nix' || (matrix.arch == 'arm64' && '--tool-provisioning=path' || '') }}
+
+      - name: Bind the action-selected native Windows Nim
+        if: runner.os == 'Windows' && runner.arch == 'X64'
+        shell: pwsh
+        run: ./.github/scripts/bind-selected-native-nim.ps1
 
       - name: just build (cross-check)
-        # Re-runs the legacy `just build` path inside the same env so
+        # Re-runs the original `just build` through the owning committed flake so
         # we catch silent divergences between `repro build` outputs
         # and what the dev shell + Justfile produce today.
-        run: dev-exec just build
+        run: ${{ runner.os != 'Windows' && 'nix develop . --no-update-lock-file --command just build' || 'dev-exec just build' }}
 
       - name: just test (cross-check)
-        run: dev-exec just test
+        run: ${{ runner.os != 'Windows' && 'nix develop . --no-update-lock-file --command just test' || 'dev-exec just test' }}
 
       # Diagnostics on failure. Three things below are load-bearing:
       #
@@ -121,6 +190,11 @@ jobs:
       # fails earlier than x64, and x64 fails for an unrelated project-level reason
       # (`cannot open file: results`, codetracer_ct_print.nim(24, 8)). These
       # artifacts are the only way to find out why any of it actually fails.
+      - name: Original native build comparison after Windows failure
+        if: failure() && runner.os == 'Windows'
+        # Supplementary comparison only; the original monitored failure remains.
+        run: dev-exec just build
+
       - name: Upload logs on failure
         if: failure()
         uses: actions/upload-artifact@v4
@@ -128,6 +202,9 @@ jobs:
           name: reprobuild-logs-${{ matrix.os }}-${{ matrix.arch }}
           path: |
             .repro/build/*/build-failure-report.json
+            .repro/windows-native-provenance/*.json
+            .repro/build/*/*-tool-identities.inspect.json
+            build/nimcache/**/*.json
             .repro/build/*/build-engine-cache/actions/
           include-hidden-files: true
           retention-days: 7

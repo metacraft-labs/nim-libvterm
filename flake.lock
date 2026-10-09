@@ -1936,7 +1936,8 @@
         "nixpkgs": [
           "nixos-modules",
           "nixpkgs-unstable"
-        ]
+        ],
+        "standard-hooks-src": "standard-hooks-src"
       }
     },
     "rust-analyzer-src": {
@@ -2008,6 +2009,23 @@
       "original": {
         "type": "git",
         "url": "https://spectrum-os.org/git/spectrum"
+      }
+    },
+    "standard-hooks-src": {
+      "flake": false,
+      "locked": {
+        "lastModified": 1791010525,
+        "narHash": "sha256-wTBTyTJwShLWCUShUsFS35ck5VygVJbVvJtRoyV+hIc=",
+        "owner": "metacraft-labs",
+        "repo": "devops-modules",
+        "rev": "c8ef41d446e211892fe9775182b43d5d517554ac",
+        "type": "github"
+      },
+      "original": {
+        "owner": "metacraft-labs",
+        "repo": "devops-modules",
+        "rev": "c8ef41d446e211892fe9775182b43d5d517554ac",
+        "type": "github"
       }
     },
     "systems": {
