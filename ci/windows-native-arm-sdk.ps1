@@ -7,7 +7,7 @@ $holds=[Collections.Generic.List[IDisposable]]::new()
 $activeStageChild=$null
 $unresolvedStageOwner=$false
 try {
-$gitImage=(Get-Command git -CommandType Application -ErrorAction Stop).Source
+$gitImage=(Get-Command git -CommandType Application -ErrorAction Stop | Select-Object -First 1).Source
 $gitStream=[IO.FileStream]::new($gitImage,[IO.FileMode]::Open,[IO.FileAccess]::Read,[IO.FileShare]::Read)
 $holds.Add($gitStream)
 $gitSHA=(Get-FileHash -LiteralPath $gitImage -Algorithm SHA256).Hash
@@ -393,7 +393,7 @@ try {
   if((Tree $native) -ne $nativeTreeBefore -or (Tree $zlib.sdk) -ne $zlib.sdkTree -or (Source-State) -ne $sourceBefore){throw 'Native source/runtime changed through activation'}
   # Inspect the genuine resolved graph while all native package and profile
   # principals are still held. This is graph qualification, not corpus execution.
-  $reproPath=(Get-Command repro -CommandType Application -ErrorAction Stop).Source
+  $reproPath=(Get-Command repro -CommandType Application -ErrorAction Stop | Select-Object -First 1).Source
   $reproHold=[IO.FileStream]::new($reproPath,[IO.FileMode]::Open,[IO.FileAccess]::Read,[IO.FileShare]::Read);$holds.Add($reproHold)
   $reproBeforeSHA=Hash-File $reproPath
   $selectedPath=[String]::Join(';',@($profile.nimBin,$profile.clangBin,$profile.justBin,(Split-Path $gitImage)))
