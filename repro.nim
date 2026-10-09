@@ -82,6 +82,7 @@
 ## provisioning is required for uses declarations".
 
 import repro_project_dsl
+import std/[os, json]
 when defined(linux) or defined(macosx):
   import repro_dsl_stdlib/packages/nim as canonicalNim
   when defined(macosx):
@@ -90,6 +91,10 @@ when defined(linux) or defined(macosx):
     import repro_dsl_stdlib/packages/gcc as canonicalBackend
   import repro_dsl_stdlib/packages/bash as canonicalBash
   import libvterm_sdk_contribution
+
+when defined(windows) and defined(arm64):
+  import repro_dsl_stdlib/packages/nim as nativeCanonicalNim
+  import repro_dsl_stdlib/packages/clang as nativeCanonicalBackend
 
 # ``ct_test_nim_unittest`` supplies the ``buildNimUnittest.build(...)``
 # typed-tool used by every test BUILD edge below, and the
@@ -223,7 +228,7 @@ package nim_libvterm:
     "nim >=2.0"
     when defined(linux) or defined(macosx):
       "bash >=4"
-    when defined(macosx):
+    when defined(macosx) or (defined(windows) and defined(arm64)):
       "clang >=14"
     else:
       "gcc >=12"
@@ -251,6 +256,33 @@ package nim_libvterm:
     #   * ``threadsOn`` (default true)   — ``--threads:on``.
     #   * ``extraPassC = @["-w"]``       — silence the vendored libvterm C
     #     warnings (the ``--passC:-w`` baked into ``nim-flags``).
+    var nativeArmInputs: seq[string] = @[]
+    var nativeArmEnv: seq[(string, string)] = @[]
+    when defined(windows) and defined(arm64) and defined(reproProviderMode):
+      providerDirectoryInput(".repro/libvterm-native-arm")
+      let profilePath = ".repro/libvterm-native-arm/profile.json"
+      if not fileExists(profilePath):
+        raise newException(ValueError, "Required native Libvterm ARM profile is missing")
+      let profile = parseJson(readDevEnvFile(profilePath))
+      if profile.kind != JObject or profile["schemaId"].getStr != "nim_libvterm.native-arm-sdk.v1" or
+          profile["target"].getStr != "aarch64-w64-mingw32" or
+          profile["llvmArchiveSHA256"].getStr != "9a835d5179c9f3a5a783c11a7f14062a249b4765dd11add64a66786864e82ab2" or
+          profile["clangSHA256"].getStr != "b9d8bae85fff7df611c1ef2f9ad293f42b4b85e1802cc06d39d411ce1582e0cc" or
+          profile["nimVersion"].getStr != "2.2.10" or profile["nativeMachine"].getStr != "AA64":
+        raise newException(ValueError, "Native Libvterm ARM profile refused")
+      let clang = profile["clang"].getStr
+      let nimBin = profile["nimBin"].getStr
+      let clangBin = profile["clangBin"].getStr
+      let justBin = profile["justBin"].getStr
+      for path in [clang, nimBin, clangBin, justBin]:
+        if not path.isAbsolute:
+          raise newException(ValueError, "Native Libvterm ARM profile path refused")
+      if not fileExists(clang) or not fileExists(nimBin / "nim.exe") or not fileExists(justBin / "just.exe"):
+        raise newException(ValueError, "Native Libvterm ARM profile member missing")
+      nativeArmInputs = @[profilePath]
+      nativeArmEnv = @[("PATH", nimBin & ";" & clangBin & ";" & justBin),
+                       ("LIBVTERM_NATIVE_ARM_CLANG", clang)]
+
     var testBuildActions: seq[BuildActionDef] = @[]
     var testExecuteActions: seq[BuildActionDef] = @[]
 
@@ -270,13 +302,17 @@ package nim_libvterm:
           "build/windows-zlib-sdk/include/zconf.h",
           "build/windows-zlib-sdk/lib/libz.a",
           "build/windows-zlib-sdk/identity.json",
-          ".github/scripts/windows-native-compiler-sdk.ps1", "flake.lock"]
+          "flake.lock"] &
+          (when defined(arm64): @["ci/windows-native-arm-sdk.ps1", "ci/native-python-owned-path.ps1"]
+           else: @[".github/scripts/windows-native-compiler-sdk.ps1"])
       else: newSeq[string]()
       let zlibPassC = when defined(windows):
-        @["-Ibuild/windows-zlib-sdk/include"]
+        @["-Ibuild/windows-zlib-sdk/include"] &
+          (when defined(arm64): @["--target=aarch64-w64-mingw32"] else: @[])
       else: newSeq[string]()
       let zlibPassL = when defined(windows):
-        @["-Lbuild/windows-zlib-sdk/lib"]
+        @["-Lbuild/windows-zlib-sdk/lib"] &
+          (when defined(arm64): @["--target=aarch64-w64-mingw32"] else: @[])
       else: newSeq[string]()
       let edge = buildNimUnittest.build(
         source = source,
@@ -284,12 +320,13 @@ package nim_libvterm:
         defines = @["release"],
         paths = @["src", "tests"],
         extraInputs = @["src", "tests", "vendor/libvterm", "config.nims",
-                        "nim_libvterm.nimble"] & sdkInputs,
+                        "nim_libvterm.nimble"] & sdkInputs & nativeArmInputs,
         mm = "orc",
         extraPassC = @["-w"] & zlibPassC,
         extraPassL = zlibPassL,
+        extraEnv = nativeArmEnv,
         actionId = "nim_libvterm.test_build." & stem)
-      when defined(macosx):
+      when defined(macosx) or (defined(windows) and defined(arm64)):
         appendRegisteredActionToolIdentityRefs(edge.action.id, @["clang"])
       else:
         appendRegisteredActionToolIdentityRefs(edge.action.id, @["gcc"])
@@ -306,7 +343,8 @@ package nim_libvterm:
       let executeEdge = edge.testBinary.run(
         actionId = "nim_libvterm.test_execute." & stem,
         registerImplicitName = false,
-        extraInputs = runtimeInputs)
+        extraInputs = runtimeInputs & nativeArmInputs,
+        extraEnv = nativeArmEnv)
       if source == "tests/test_nimcache_is_worktree_local.nim":
         appendRegisteredActionToolIdentityRefs(executeEdge.id, @["nim"])
         when defined(linux) or defined(macosx):
