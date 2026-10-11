@@ -36,7 +36,13 @@ function Source-State {
   if (-not $rootItem.PSIsContainer -or ($rootItem.Attributes -band [IO.FileAttributes]::ReparsePoint)) {throw 'Foreign owning root'}
   $head=(Metadata-Git @('rev-parse','HEAD')).Trim();if ($head -ne $SourceRevision) {throw 'Foreign owning HEAD'}
   $tree=Metadata-Git @('ls-tree','-r','--full-tree','HEAD');$index=Metadata-Git @('ls-files','--stage');$status=Metadata-Git @('status','--porcelain')
-  if ($status.Trim().Length) {throw 'Dirty owning source'}
+  if ($status.Trim().Length) {
+    # Project only Git status/pathnames and the source-event identities. Never
+    # expose configuration, file contents, process arguments or credentials.
+    $dirtyProjection=[ordered]@{schemaId='nim_libvterm.dirty-source.v1';expectedHead=$SourceRevision;actualHead=$head;statusPathRows=@($status.Trim().Split("`n"))}
+    [Console]::Error.WriteLine(($dirtyProjection|ConvertTo-Json -Compress))
+    throw 'Dirty owning source'
+  }
   $treeRows=@($tree.Trim().Split("`n")|ForEach-Object {$_ -replace ' blob ', ' '});$indexRows=@($index.Trim().Split("`n")|ForEach-Object {$_ -replace ' 0\t', "`t"})
   if (($treeRows -join "`n") -ne ($indexRows -join "`n")) {throw 'Owning index differs from pinned tree'}
   $files=@()
