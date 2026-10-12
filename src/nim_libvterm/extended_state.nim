@@ -17,7 +17,7 @@
 ##   * CSI > 4 ; Pn m -- modify-other-keys
 ##   * CSI ? 1016 h/l -- mouse pixel-position protocol selector
 ##   * CSI t -- window manipulation (recorded; not actuated)
-##   * CSI = ... u  /  CSI > ... u -- Kitty keyboard progressive enhancement
+##   * CSI > / < / = / ? ... u -- Kitty keyboard progressive enhancement
 ##
 ## Image protocols (Sixel / Kitty graphics / iTerm2 OSC 1337) are tracked
 ## here at the *registry* level: each `apc`/`dcs`/OSC 1337 sighting
@@ -106,7 +106,14 @@ type
     syncOutput: bool
     extUnderlinePen: ExtUnderlineState
     extUnderlineColorPen: ExtColor
-    kittyStack: seq[set[KittyKeyFlag]]
+    kittyStacks: array[bool, seq[set[KittyKeyFlag]]]
+      ## Kitty keyboard enhancement stacks, indexed by `kittyOnAlt`: the
+      ## protocol gives the main and alternate screens independent stacks.
+    kittyOnAlt: bool
+      ## Whether DEC mode 1047 / 1049 last selected the alternate screen.
+      ## Tracked from the same CSI pre-scan as the `u` sequences, so a
+      ## push that follows `CSI ? 1049 h` in one `feed` lands on the
+      ## alternate stack even though libvterm has not consumed the switch yet.
     modifyKeysLevel: int
     mouseProto: MouseProtocol
     windowOpLog: seq[WindowOp]
@@ -205,7 +212,7 @@ type
 
 proc newExtendedState*(): ExtendedState =
   result.notificationCap = 1024
-  result.kittyStack = @[{}]
+  result.kittyStacks = [@[{}], @[{}]]
   result.mouseProto = mpNone
   result.nextHyperlinkId = 1
   result.nextImageId = 1
@@ -690,6 +697,10 @@ proc decodeWindowOp(args: openArray[clong]): WindowOp =
   of 21: WindowOp(kind: woGetTitle, args: rest)
   else:  WindowOp(kind: woOther, args: @[kind] & rest)
 
+const KittyStackDepth = 8
+  ## Entries per Kitty keyboard stack, the bottom entry included. The
+  ## protocol asks for a bound without fixing one; kitty itself keeps 8.
+
 proc parseKittyKbFlags(value: int): set[KittyKeyFlag] =
   if (value and 0x1) != 0: result.incl kkfDisambiguate
   if (value and 0x2) != 0: result.incl kkfReportEvents
@@ -707,6 +718,9 @@ proc handleCsi*(e: var ExtendedState; leader: string;
       case v
       of 2026:
         e.syncOutput = setMode
+      of 1047, 1049:
+        # The modes libvterm switches screens on (it ignores mode 47).
+        e.kittyOnAlt = setMode
       of 1016:
         if setMode: e.mouseProto = mpPixel
         elif e.mouseProto == mpPixel: e.mouseProto = mpSgr
@@ -740,30 +754,45 @@ proc handleCsi*(e: var ExtendedState; leader: string;
     e.windowOpLog.add decodeWindowOp(args)
     return
 
-  # Kitty keyboard:
-  #   CSI = flags ; mode u   -- push a new stack frame with `flags`. We
-  #                              ignore `mode` (terminal-side semantics
-  #                              for set/union/clear); top-of-stack is
-  #                              what consumers care about.
-  #   CSI > flags u          -- pop one stack frame.
-  #   CSI < flags u          -- push a stack frame (alias).
-  #   CSI ? u                -- query (we don't actuate replies).
+  # Kitty keyboard progressive enhancement
+  # (https://sw.kovidgoyal.net/kitty/keyboard-protocol/#progressive-enhancement):
+  #   CSI > flags u          -- push `flags` (default 0).
+  #   CSI < number u         -- pop `number` entries (default 1).
+  #   CSI = flags ; mode u   -- modify the current entry: mode 1 (the
+  #                              default) sets it to `flags`, 2 sets the
+  #                              bits in `flags`, 3 clears them.
+  #   CSI ? u                -- query. The terminal answers `CSI ? flags u`;
+  #                              `Screen` has no reply channel, so we don't.
   #
-  # The stack is a real `seq[set[KittyKeyFlag]]`: pushes append, pops
-  # remove the last frame. We always keep at least one frame (the base
-  # `{}` installed in `newExtendedState`) so `kittyKeyboardFlags()`
-  # never has to special-case an empty stack.
+  # The stack layout mirrors kitty's own implementation: there is always a
+  # bottom entry (the flags in force before any push, `{}` initially), so
+  # `=` with nothing pushed modifies the bottom entry. A pop that reaches
+  # past the bottom entry empties the stack, which resets all flags. A push
+  # onto a full stack evicts the oldest entry.
   if command == 'u' and intermed == "":
+    template stack: untyped = e.kittyStacks[e.kittyOnAlt]
+    let first =
+      if args.len >= 1: int(args[0].uint32 and not (uint32(1) shl 31)) else: 0
     case leader
-    of "=", "<":
-      let flags = if args.len >= 1:
-        parseKittyKbFlags(int(args[0].uint32 and not (uint32(1) shl 31)))
-      else:
-        {}
-      e.kittyStack.add flags
     of ">":
-      if e.kittyStack.len > 1:
-        discard e.kittyStack.pop()
+      if stack.len >= KittyStackDepth:
+        stack.delete(0)
+      stack.add parseKittyKbFlags(first)
+    of "<":
+      let n = max(1, first)
+      if n >= stack.len:
+        stack = @[{}]
+      else:
+        stack.setLen(stack.len - n)
+    of "=":
+      let flags = parseKittyKbFlags(first)
+      let mode =
+        if args.len >= 2: int(args[1].uint32 and not (uint32(1) shl 31)) else: 1
+      case mode
+      of 0, 1: stack[^1] = flags  # 0: the mode was left empty
+      of 2: stack[^1] = stack[^1] + flags
+      of 3: stack[^1] = stack[^1] - flags
+      else: discard
     else: discard
     return
 
@@ -912,7 +941,8 @@ proc workingDirectory*(e: ExtendedState): string = e.cwd
 proc notifications*(e: ExtendedState): seq[Notification] = e.notificationsList
 proc synchronizedOutput*(e: ExtendedState): bool = e.syncOutput
 proc kittyKeyboardFlags*(e: ExtendedState): set[KittyKeyFlag] =
-  if e.kittyStack.len == 0: {} else: e.kittyStack[^1]
+  ## The current entry of the active screen's Kitty keyboard stack.
+  e.kittyStacks[e.kittyOnAlt][^1]
 proc modifyOtherKeys*(e: ExtendedState): int = e.modifyKeysLevel
 proc mouseProtocol*(e: ExtendedState): MouseProtocol = e.mouseProto
 proc windowOps*(e: ExtendedState): seq[WindowOp] = e.windowOpLog
