@@ -109,41 +109,68 @@ jobs:
         shell: pwsh
         run: ./.github/scripts/windows-native-compiler-sdk.ps1
 
-      - name: Provision the owning native Windows ARM64 SDK
+      - name: Authenticate owning checkout Git runtime configuration
         if: runner.os == 'Windows' && matrix.arch == 'arm64'
         shell: pwsh
         run: |
-          ./ci/windows-native-arm-sdk.ps1 -OwnedPathHelper ./ci/native-python-owned-path.ps1 -SourceRoot "$env:GITHUB_WORKSPACE" -SourceRevision '${{ github.sha }}'
+          $ErrorActionPreference = 'Stop'
+          $inherited = @(Get-ChildItem Env: | Where-Object { $_.Name -match '^GIT_CONFIG_(COUNT|PARAMETERS|KEY_[0-9]+|VALUE_[0-9]+)$' })
+          if ($inherited.Count -ne 0) { throw 'Owning checkout inherits unadmitted Git runtime configuration' }
+
+      - name: Check out clean owning native Windows ARM64 source
+        if: runner.os == 'Windows' && matrix.arch == 'arm64'
+        uses: actions/checkout@v4
+        # Source-State authenticates physical bytes against the pinned Git blobs.
+        # Scope conversion policy to this checkout, without changing host config.
+        env:
+          GIT_CONFIG_COUNT: "1"
+          GIT_CONFIG_KEY_0: core.autocrlf
+          GIT_CONFIG_VALUE_0: "false"
+        with:
+          ref: ${{ github.sha }}
+          path: native-owning-source
+      - name: Provision the owning native Windows ARM64 SDK
+        if: runner.os == 'Windows' && matrix.arch == 'arm64'
+        shell: pwsh
+        working-directory: ${{ runner.os == 'Windows' && matrix.arch == 'arm64' && 'native-owning-source' || '.' }}
+        run: |
+          ./ci/windows-native-arm-sdk.ps1 -OwnedPathHelper ./ci/native-python-owned-path.ps1 -SourceRoot "$env:GITHUB_WORKSPACE/native-owning-source" -SourceRevision '${{ github.sha }}'
 
       - name: Record native Windows executable provenance
         if: runner.os == 'Windows'
         shell: pwsh
+        working-directory: ${{ runner.os == 'Windows' && matrix.arch == 'arm64' && 'native-owning-source' || '.' }}
         run: dev-exec powershell -NoProfile -NonInteractive -ExecutionPolicy Bypass -File .github/scripts/windows-native-provenance.ps1
 
       - name: repro build
         # Build the owning complete 39-module terminal corpus.
         env:
           REPRO_PROVISIONING_CONTRIBUTOR: ${{ runner.os != 'Windows' && 'libvterm-owning-nim-zlib-sdk' || '' }}
+        working-directory: ${{ runner.os == 'Windows' && matrix.arch == 'arm64' && 'native-owning-source' || '.' }}
         run: dev-exec repro build ${{ runner.os != 'Windows' && '--tool-provisioning=nix' || (matrix.arch == 'arm64' && '--tool-provisioning=path' || '') }}
 
       - name: repro test
         # Materialises the `test` collection.
         env:
           REPRO_PROVISIONING_CONTRIBUTOR: ${{ runner.os != 'Windows' && 'libvterm-owning-nim-zlib-sdk' || '' }}
+        working-directory: ${{ runner.os == 'Windows' && matrix.arch == 'arm64' && 'native-owning-source' || '.' }}
         run: dev-exec repro test ${{ runner.os != 'Windows' && '--tool-provisioning=nix' || (matrix.arch == 'arm64' && '--tool-provisioning=path' || '') }}
 
       - name: Bind the action-selected native Windows Nim
         if: runner.os == 'Windows' && runner.arch == 'X64'
         shell: pwsh
+        working-directory: ${{ runner.os == 'Windows' && matrix.arch == 'arm64' && 'native-owning-source' || '.' }}
         run: ./.github/scripts/bind-selected-native-nim.ps1
 
       - name: just build (cross-check)
         # Re-runs the original `just build` through the owning committed flake so
         # we catch silent divergences between `repro build` outputs
         # and what the dev shell + Justfile produce today.
+        working-directory: ${{ runner.os == 'Windows' && matrix.arch == 'arm64' && 'native-owning-source' || '.' }}
         run: ${{ runner.os != 'Windows' && 'nix develop . --no-update-lock-file --command just build' || 'dev-exec just build' }}
 
       - name: just test (cross-check)
+        working-directory: ${{ runner.os == 'Windows' && matrix.arch == 'arm64' && 'native-owning-source' || '.' }}
         run: ${{ runner.os != 'Windows' && 'nix develop . --no-update-lock-file --command just test' || 'dev-exec just test' }}
 
       # Diagnostics on failure. Three things below are load-bearing:
@@ -178,6 +205,7 @@ jobs:
       - name: Original native build comparison after Windows failure
         if: failure() && runner.os == 'Windows'
         # Supplementary comparison only; the original monitored failure remains.
+        working-directory: ${{ runner.os == 'Windows' && matrix.arch == 'arm64' && 'native-owning-source' || '.' }}
         run: dev-exec just build
 
       - name: Upload logs on failure
@@ -191,6 +219,11 @@ jobs:
             .repro/build/*/*-tool-identities.inspect.json
             build/nimcache/**/*.json
             .repro/build/*/build-engine-cache/actions/
+            native-owning-source/.repro/build/*/build-failure-report.json
+            native-owning-source/.repro/windows-native-provenance/*.json
+            native-owning-source/.repro/build/*/*-tool-identities.inspect.json
+            native-owning-source/build/nimcache/**/*.json
+            native-owning-source/.repro/build/*/build-engine-cache/actions/
           include-hidden-files: true
           retention-days: 7
           if-no-files-found: warn

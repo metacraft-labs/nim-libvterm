@@ -124,9 +124,23 @@ jobs:
         shell: pwsh
         run: ./.github/scripts/windows-native-compiler-sdk.ps1
 
+      - name: Authenticate owning checkout Git runtime configuration
+        if: runner.os == 'Windows' && matrix.arch == 'arm64'
+        shell: pwsh
+        run: |
+          $ErrorActionPreference = 'Stop'
+          $inherited = @(Get-ChildItem Env: | Where-Object { $_.Name -match '^GIT_CONFIG_(COUNT|PARAMETERS|KEY_[0-9]+|VALUE_[0-9]+)$' })
+          if ($inherited.Count -ne 0) { throw 'Owning checkout inherits unadmitted Git runtime configuration' }
+
       - name: Check out clean owning native Windows ARM64 source
         if: runner.os == 'Windows' && matrix.arch == 'arm64'
         uses: actions/checkout@v4
+        # Source-State authenticates physical bytes against the pinned Git blobs.
+        # Scope conversion policy to this checkout, without changing host config.
+        env:
+          GIT_CONFIG_COUNT: "1"
+          GIT_CONFIG_KEY_0: core.autocrlf
+          GIT_CONFIG_VALUE_0: "false"
         with:
           ref: ${{ github.sha }}
           path: native-owning-source
@@ -224,6 +238,7 @@ jobs:
             .repro/build/*/*-tool-identities.inspect.json
             build/nimcache/**/*.json
             .repro/build/*/build-engine-cache/actions/
+            native-owning-source/.repro/build/*/*-tool-identities.inspect.json
           include-hidden-files: true
           retention-days: 7
           if-no-files-found: warn
