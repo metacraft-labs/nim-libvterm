@@ -72,7 +72,7 @@ $helperBytes=[byte[]]::new($helper.Length)
 $read=0
 while ($read -lt $helperBytes.Length) { $n=$helper.Read($helperBytes,$read,$helperBytes.Length-$read); if ($n -eq 0) { throw 'Incomplete held helper' }; $read += $n }
 $helperSHA=[Convert]::ToHexString([Security.Cryptography.SHA256]::HashData($helperBytes)).ToLowerInvariant()
-if ($helperSHA -ne '10a232fbec8a9c8a16797aa21bc298b914ad7d3721a3201019347d3e7c1f16db') { throw 'Unknown native held-path helper image' }
+if ($helperSHA -ne '04a9ab29c373463a79d4f6329a74de1eb90de59da392d0f3b57efec2f20aa4a3') { throw 'Unknown native held-path helper image' }
 . ([ScriptBlock]::Create([Text.Encoding]::UTF8.GetString($helperBytes)))
 $sourceBefore=Source-State
 $root=Join-Path $env:RUNNER_TEMP ('libvterm-arm-sdk-'+[Guid]::NewGuid().ToString('N'))
