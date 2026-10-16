@@ -226,8 +226,13 @@ package nim_libvterm:
     # ``gcc >=12`` matches the workspace toolchain floor. Sufficient for
     # the path-mode resolver under ``nix develop``.
     "nim >=2.0"
-    when defined(linux) or defined(macosx):
-      "bash >=4"
+    # Original Justfile build/test cross-check command closure on all hosts.
+    "just >=1"
+    "bash >=4"
+    "mkdir"
+    "dirname"
+    "basename"
+    "tee"
     when defined(macosx) or (defined(windows) and defined(arm64)):
       "clang >=14"
     else:
