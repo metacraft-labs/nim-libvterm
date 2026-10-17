@@ -71,3 +71,15 @@ block worktreeLocalNimcache:
   if rel.len > 0:
     cacheDir.add("/" & rel)
   switch("nimcache", cacheDir & "/" & project & suffix)
+
+# Native ARM selector is granted only by the complete owned SDK constructor.
+when defined(windows) and defined(arm64):
+  from std/os import isAbsolute
+  let nativeArmClang = getEnv("LIBVTERM_NATIVE_ARM_CLANG")
+  if nativeArmClang.len == 0 or not isAbsolute(nativeArmClang):
+    raise newException(ValueError, "Missing absolute native Libvterm ARM Clang selector")
+  if not fileExists(nativeArmClang):
+    raise newException(ValueError, "Native Libvterm ARM Clang selector is not a file")
+  switch("cc", "clang")
+  switch("clang.exe", nativeArmClang)
+  switch("clang.linkerexe", nativeArmClang)

@@ -1,0 +1,1 @@
+The bundled stb_image.h retains its prior source content with a local formatting patch: eight leading tab characters on seven lines are replaced with spaces. All nonleading bytes and line endings remain unchanged. This is a local formatting change, so this copy does not claim byte identity with the prior vendored header.
