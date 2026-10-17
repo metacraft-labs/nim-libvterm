@@ -200,7 +200,7 @@ function Run-Stage([string]$label,[string]$exe,[string[]]$arguments,[string]$wor
     $row.birthUTC=$child.StartTime.ToUniversalTime().Ticks;Save-Stage
     $outCopy=$child.StandardOutput.BaseStream.CopyToAsync($out);$errCopy=$child.StandardError.BaseStream.CopyToAsync($err)
     $child.WaitForExit();$row.exit=$child.ExitCode;$row.terminal=$true;Save-Stage
-    $outCopy.GetAwaiter().GetResult();$errCopy.GetAwaiter().GetResult();$out.Flush($true);$err.Flush($true)
+    [void]$outCopy.GetAwaiter().GetResult();[void]$errCopy.GetAwaiter().GetResult();$out.Flush($true);$err.Flush($true)
     $out.Dispose();$out=$null;$err.Dispose();$err=$null
     $row.stdoutSHA=Hash-File $outPath;$row.stderrSHA=Hash-File $errPath;Save-Stage
     $row.imageAfterSHA=Hash-File $exe;Save-Stage
