@@ -1,4 +1,4 @@
-param([Parameter(Mandatory=$true)][string]$OwnedPathHelper, [Parameter(Mandatory=$true)][string]$SourceRoot, [Parameter(Mandatory=$true)][string]$SourceRevision)
+param([Parameter(Mandatory=$true)][string]$OwnedPathHelper, [Parameter(Mandatory=$true)][string]$SourceRoot, [Parameter(Mandatory=$true)][string]$SourceRevision, [Parameter(Mandatory=$true)][string]$FailureEvidenceDirectory)
 $ErrorActionPreference='Stop'
 Set-StrictMode -Version Latest
 if (-not $IsWindows -or [Runtime.InteropServices.RuntimeInformation]::OSArchitecture.ToString() -ne 'Arm64') { throw 'This provider requires an actual native Windows ARM64 host' }
@@ -472,8 +472,63 @@ try {
   $receiptFile=Join-Path $root 'provider.json';$stream=[IO.FileStream]::new($receiptFile,[IO.FileMode]::CreateNew,[IO.FileAccess]::Write,[IO.FileShare]::Read);try{$b=[Text.Encoding]::UTF8.GetBytes(($receipt|ConvertTo-Json -Depth 10));$stream.Write($b,0,$b.Length);$stream.Flush($true)}finally{$stream.Dispose()}
 
 } catch {
+  $primaryFailure=$_
   $receipt.failure=$_.Exception.Message
-  $receipt | ConvertTo-Json -Depth 10 | Set-Content -LiteralPath (Join-Path $root 'provider-failure.json')
-  throw
+  # Observation failure never replaces the original SDK stage failure.
+  try {
+    $failurePath=Join-Path $root 'provider-failure.json'
+    $receipt | ConvertTo-Json -Depth 10 | Set-Content -LiteralPath $failurePath
+    if(-not [IO.Path]::IsPathFullyQualified($FailureEvidenceDirectory)){throw 'Absolute failure evidence directory required'}
+    $destination=[IO.Path]::GetFullPath($FailureEvidenceDirectory)
+    $sourcePrefix=[IO.Path]::GetFullPath($SourceRoot).TrimEnd([char]92)+[char]92
+    if($destination.Equals($sourcePrefix.TrimEnd([char]92),[StringComparison]::OrdinalIgnoreCase) -or $destination.StartsWith($sourcePrefix,[StringComparison]::OrdinalIgnoreCase)){throw 'Failure evidence must be outside the guarded source root'}
+    if(Test-Path -LiteralPath $destination){throw 'Failure evidence destination must be fresh'}
+    [void](New-Item -ItemType Directory -Path $destination -ErrorAction Stop)
+    $destinationHold=[NativePythonOwnedPath]::new($destination,$false);$holds.Add($destinationHold)
+    $selected=@($failurePath)
+    if($receipt.stages.Count -gt 0){
+      $last=$receipt.stages[-1]
+      if($last.terminal){$selected+=@($last.stdout,$last.stderr,(Join-Path $root ($last.name+'.ownership.json')))}
+    }
+    $evidence=[ordered]@{sourceRevision=$SourceRevision;scriptSHA=$scriptSHA;sourceRoot=$SourceRoot;ownedStageRoot=$root;ownedStageRootIdentity=$rootHold.Identity();destinationIdentity=$destinationHold.Identity();primaryFailure=$primaryFailure.Exception.Message;files=@();scope='Failure-only bounded copies from this exact held SDK root; original failure remains authoritative'}
+    Add-Type -TypeDefinition @'
+using System;
+using System.IO;
+using System.Runtime.InteropServices;
+using Microsoft.Win32.SafeHandles;
+public static class LibvtermFailureEvidenceFile {
+  [StructLayout(LayoutKind.Sequential)] struct Time { public uint Low, High; }
+  [StructLayout(LayoutKind.Sequential)] struct Info { public uint Attributes; public Time Creation, Access, Write; public uint Volume, SizeHigh, SizeLow, Links, IndexHigh, IndexLow; }
+  [DllImport("kernel32.dll", CharSet=CharSet.Unicode, SetLastError=true)] static extern SafeFileHandle CreateFileW(string p,uint access,uint share,IntPtr security,uint disposition,uint flags,IntPtr template);
+  [DllImport("kernel32.dll", SetLastError=true)] static extern bool GetFileInformationByHandle(SafeFileHandle h,out Info i);
+  public static string Identity(FileStream stream) {
+    Info i; if(!GetFileInformationByHandle(stream.SafeFileHandle,out i)) throw new System.ComponentModel.Win32Exception(Marshal.GetLastWin32Error());
+    if((i.Attributes & 0x410u)!=0) throw new IOException("Failure evidence must be a non-reparse regular file");
+    return String.Join(":",i.Volume,i.IndexHigh,i.IndexLow,i.Creation.High,i.Creation.Low,i.Attributes,i.Links);
+  }
+  public static FileStream OpenRead(string path) {
+    var h=CreateFileW(path,0x80000000u,1u,IntPtr.Zero,3u,0x02200000u,IntPtr.Zero);
+    if(h.IsInvalid){h.Dispose();throw new System.ComponentModel.Win32Exception(Marshal.GetLastWin32Error());}
+    FileStream stream=null;
+    try {stream=new FileStream(h,FileAccess.Read);Identity(stream);return stream;}
+    catch {if(stream!=null)stream.Dispose();else h.Dispose();throw;}
+  }
+}
+'@
+    foreach($path in $selected){
+      if(-not [IO.Path]::GetDirectoryName([IO.Path]::GetFullPath($path)).Equals([IO.Path]::GetFullPath($root),[StringComparison]::OrdinalIgnoreCase)){throw 'Foreign failure evidence input'}
+      $stream=[LibvtermFailureEvidenceFile]::OpenRead($path)
+      try {
+        $fileIdentity=[LibvtermFailureEvidenceFile]::Identity($stream);$length=$stream.Length;$limit=[Math]::Min($length,[long](8MB));$bytes=[byte[]]::new([int]$limit);$read=0
+        while($read -lt $bytes.Length){$n=$stream.Read($bytes,$read,$bytes.Length-$read);if($n -le 0){throw 'Short failure evidence read'};$read+=$n}
+        if($stream.Length -ne $length -or [LibvtermFailureEvidenceFile]::Identity($stream) -cne $fileIdentity){throw 'Held failure evidence identity/length changed'}
+        $name=[IO.Path]::GetFileName($path);$copy=[IO.FileStream]::new((Join-Path $destination $name),[IO.FileMode]::CreateNew,[IO.FileAccess]::Write,[IO.FileShare]::Read)
+        try{$copy.Write($bytes,0,$bytes.Length);$copy.Flush($true)}finally{$copy.Dispose()}
+        $evidence.files+=@{name=$name;identity=$fileIdentity;originalBytes=$length;retainedBytes=$bytes.Length;truncated=($length -gt $limit);SHA256=[Convert]::ToHexString([Security.Cryptography.SHA256]::HashData($bytes)).ToLowerInvariant()}
+      }finally{$stream.Dispose()}
+    }
+    $evidence | ConvertTo-Json -Depth 12 | Set-Content -LiteralPath (Join-Path $destination 'index.json')
+  }catch{[Console]::Error.WriteLine(('Failure evidence retention also failed: '+$_.Exception.Message))}
+  throw $primaryFailure
 }
 } finally { if(-not $unresolvedStageOwner -and $null -eq $activeStageChild){foreach ($h in $holds){$h.Dispose()}} }

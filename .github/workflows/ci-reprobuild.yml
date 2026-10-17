@@ -149,7 +149,7 @@ jobs:
         shell: pwsh
         working-directory: ${{ runner.os == 'Windows' && matrix.arch == 'arm64' && 'native-owning-source' || '.' }}
         run: |
-          ./ci/windows-native-arm-sdk.ps1 -OwnedPathHelper ./ci/native-python-owned-path.ps1 -SourceRoot "$env:GITHUB_WORKSPACE/native-owning-source" -SourceRevision '${{ github.sha }}'
+          ./ci/windows-native-arm-sdk.ps1 -OwnedPathHelper ./ci/native-python-owned-path.ps1 -SourceRoot "$env:GITHUB_WORKSPACE/native-owning-source" -SourceRevision '${{ github.sha }}' -FailureEvidenceDirectory "$env:GITHUB_WORKSPACE/native-arm-sdk-failure-evidence"
 
       - name: Record native Windows executable provenance
         if: runner.os == 'Windows'
@@ -229,6 +229,7 @@ jobs:
         with:
           name: reprobuild-logs-${{ matrix.os }}-${{ matrix.arch }}
           path: |
+            native-arm-sdk-failure-evidence/
             .repro/build/*/build-failure-report.json
             native-owning-source/.repro/build/*/build-failure-report.json
             native-owning-source/.repro/build/*/build-engine-cache/actions/
