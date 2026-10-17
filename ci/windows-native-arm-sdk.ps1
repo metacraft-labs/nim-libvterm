@@ -80,6 +80,21 @@ New-Item -ItemType Directory -Path $root -ErrorAction Stop | Out-Null
 $rootHold=[NativePythonOwnedPath]::new($root,$false)
 $holds.Add($rootHold)
 function Hash-File([string]$path) { (Get-FileHash -LiteralPath $path -Algorithm SHA256).Hash.ToLowerInvariant() }
+# Read the existing held object; a named reader conflicts with its writer hold.
+function Read-HeldExactBytes([IO.FileStream]$stream,[long]$expectedLength) {
+  if(-not $stream.CanRead -or -not $stream.CanSeek -or $expectedLength -lt 0 -or $expectedLength -gt [int]::MaxValue -or $stream.Length -ne $expectedLength){throw 'Held file length/access mismatch'}
+  $position=$stream.Position
+  try {
+    $stream.Position=0
+    $bytes=[byte[]]::new([int]$expectedLength);$read=0
+    while($read -lt $bytes.Length){$n=$stream.Read($bytes,$read,$bytes.Length-$read);if($n -le 0){throw 'Short held file read'};$read+=$n}
+    if($stream.Length -ne $expectedLength){throw 'Held file length changed'}
+    return ,$bytes
+  } finally { $stream.Position=$position }
+}
+function Hash-HeldExact([IO.FileStream]$stream,[long]$expectedLength) {
+  [Convert]::ToHexString([Security.Cryptography.SHA256]::HashData((Read-HeldExactBytes $stream $expectedLength))).ToLowerInvariant()
+}
 function Tree([string]$path) {
   $queue=[Collections.Generic.Queue[string]]::new();$queue.Enqueue($path);$rows=@()
   while ($queue.Count) {
@@ -373,7 +388,7 @@ try {
     $entries=@(Get-ChildItem -LiteralPath $profileRoot -Force)
     if($entries.Count -ne 1 -or $entries[0].Name -cne 'profile.json' -or $entries[0].PSIsContainer -or ($entries[0].Attributes -band [IO.FileAttributes]::ReparsePoint)){throw 'Unknown native profile membership'}
     $expected=[Convert]::ToHexString([Security.Cryptography.SHA256]::HashData($profileBytes)).ToLowerInvariant()
-    if((Hash-File $profilePath) -ne $expected){throw 'Native profile bytes changed'}
+    if((Hash-HeldExact $profileStream $profileBytes.Length) -ne $expected){throw 'Native profile bytes changed'}
   }
   function Append-HeldCommand([string]$path,[byte[]]$addition,[string]$label){
     $item=Get-Item -LiteralPath $path -Force
@@ -386,7 +401,7 @@ try {
     Assert-Profile
     $stream.Seek(0,[IO.SeekOrigin]::End)|Out-Null;$stream.Write($addition,0,$addition.Length);$stream.Flush($true)
     if((Get-NativeIdentity $path) -ne $identity){throw 'Command file identity changed'}
-    $actual=[IO.File]::ReadAllBytes($path)
+    $actual=Read-HeldExactBytes $stream ($before.Length+$addition.Length)
     $expected=[byte[]]::new($before.Length+$addition.Length);[Array]::Copy($before,0,$expected,0,$before.Length);[Array]::Copy($addition,0,$expected,$before.Length,$addition.Length)
     if(-not [System.Linq.Enumerable]::SequenceEqual[byte]($actual,$expected)){throw 'Command file append bytes differ'}
     $receipt.activation += [ordered]@{kind=$label;path=$path;beforeLength=$before.Length;afterLength=$actual.Length;identityPreserved=$true;bytesPreserved=$true}
@@ -452,7 +467,7 @@ try {
   Assert-Profile
   if((Tree $native) -ne $nativeTreeBefore -or (Tree $zlib.sdk) -ne $zlib.sdkTree -or (Source-State) -ne $sourceBefore -or (Hash-File $inspectionPath) -ne $inspectionSHA -or (Hash-File $reproPath) -ne $reproBeforeSHA -or (Hash-File $providerPath) -ne $providerImage.sha256 -or (Hash-File $providerArtifactPath) -ne $providerArtifactSHA){throw 'Native graph authority changed'}
   $receipt.nativeGraph=[ordered]@{inspectionPath=$inspectionPath;inspectionSHA=$inspectionSHA;buildCount=$buildEdges.Count;executeCount=$executeEdges.Count;providerImage=$providerImage;providerCompileArtifactPath=$providerArtifactPath;providerCompileArtifactSHA=$providerArtifactSHA;providerCompiler=$nativeIdentity;providerCompilerSelection='Admitted supported exact766 REPRO_NIM_COMPILER environment plus held native frontend and actual AA64 provider output; durable artifact compilerCommand not decoded';selectedProfiles=$selectedProfiles;selectedJust=$selectedJust;graphMetadataGit=@{path=$gitImage;sha256=$gitSHA};scope='Actual resolved native graph only; original monitored bodies remain required'}
-  $receipt.profilePath=$profilePath;$receipt.profileSHA=Hash-File $profilePath;$receipt.activationSuccess=$true
+  $receipt.profilePath=$profilePath;$receipt.profileSHA=Hash-HeldExact $profileStream $profileBytes.Length;$receipt.activationSuccess=$true
   $receipt.success=$true
   $receiptFile=Join-Path $root 'provider.json';$stream=[IO.FileStream]::new($receiptFile,[IO.FileMode]::CreateNew,[IO.FileAccess]::Write,[IO.FileShare]::Read);try{$b=[Text.Encoding]::UTF8.GetBytes(($receipt|ConvertTo-Json -Depth 10));$stream.Write($b,0,$b.Length);$stream.Flush($true)}finally{$stream.Dispose()}
 
