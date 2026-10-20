@@ -130,7 +130,7 @@ nim_libvterm.nimble               # single-source-of-truth version
 
   Consequence: release is arranged differently per memory manager, and
   the reason is spelled out at the `when defined(gcDestructors)` block
-  in `screen.nim`. arc/orc give `Screen` *no* hand-written `=destroy`
+  in `screen.nim`. arc/orc give `Screen` _no_ hand-written `=destroy`
   (one would suppress destruction of its own fields and strand the
   block); the libvterm instance is freed by the `OwnedVTerm` RAII
   wrapper inside `ScreenInner`. refc keeps `=destroy(var Screen)`,
@@ -138,7 +138,6 @@ nim_libvterm.nimble               # single-source-of-truth version
   sweeps, and lets the GC reclaim everything else.
 
 - **Extended-state coverage uses two complementary paths.**
-
   1. **Byte-stream pre-scan** (in `feed()`) catches DEC private modes
      that libvterm's `set_dec_mode` consumes silently without invoking
      any callback (DEC mode 2026, 1016, 1006, 1015, 1005) and
