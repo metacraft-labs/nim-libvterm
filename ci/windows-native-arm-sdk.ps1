@@ -1,10 +1,11 @@
-param([Parameter(Mandatory=$true)][string]$OwnedPathHelper, [Parameter(Mandatory=$true)][string]$SourceRoot, [Parameter(Mandatory=$true)][string]$SourceRevision, [Parameter(Mandatory=$true)][string]$FailureEvidenceDirectory)
+param([Parameter(Mandatory=$true)][string]$OwnedPathHelper, [Parameter(Mandatory=$true)][string]$SourceRoot, [Parameter(Mandatory=$true)][string]$SourceRevision, [Parameter(Mandatory=$true)][string]$FailureEvidenceDirectory, [switch]$VerifyNativeRunquotaControls)
 $ErrorActionPreference='Stop'
 Set-StrictMode -Version Latest
 if (-not $IsWindows -or [Runtime.InteropServices.RuntimeInformation]::OSArchitecture.ToString() -ne 'Arm64') { throw 'This provider requires an actual native Windows ARM64 host' }
 if ($SourceRevision -notmatch '^[0-9a-f]{40}$') { throw 'Invalid exact owning revision' }
 $holds=[Collections.Generic.List[IDisposable]]::new()
 $activeStageChild=$null
+$script:admittedNativeRunquotad=$null
 $unresolvedStageOwner=$false
 try {
 $gitImage=(Get-Command git -CommandType Application -ErrorAction Stop | Select-Object -First 1).Source
@@ -202,6 +203,7 @@ function Run-Stage([string]$label,[string]$exe,[string[]]$arguments,[string]$wor
     $info=[Diagnostics.ProcessStartInfo]::new($exe);$info.WorkingDirectory=$workingDirectory;$info.UseShellExecute=$false;$info.RedirectStandardOutput=$true;$info.RedirectStandardError=$true
     if($selectedPath){
       $info.Environment["PATH"]=$selectedPath;$info.Environment["LIBVTERM_NATIVE_ARM_CLANG"]=$clang
+      if($script:admittedNativeRunquotad){$info.Environment['RUNQUOTAD_BIN']=$script:admittedNativeRunquotad}
       $providerNim=Join-Path $profile.nimBin 'nim.exe'
       if($info.Environment.ContainsKey('REPRO_NIM_COMPILER') -and $info.Environment['REPRO_NIM_COMPILER'] -and -not [IO.Path]::GetFullPath($info.Environment['REPRO_NIM_COMPILER']).Equals($providerNim,[StringComparison]::OrdinalIgnoreCase)){throw 'Foreign provider compiler override'}
       $info.Environment['REPRO_NIM_COMPILER']=$providerNim
@@ -418,6 +420,21 @@ try {
   $reproHold=[IO.FileStream]::new($reproPath,[IO.FileMode]::Open,[IO.FileAccess]::Read,[IO.FileShare]::Read);$holds.Add($reproHold)
   $reproBeforeSHA=Hash-File $reproPath
   $selectedPath=[String]::Join(';',@($profile.nimBin,$profile.clangBin,$profile.justBin,(Split-Path $gitImage)))
+  $daemonHelper=Join-Path $SourceRoot 'ci/native-arm-runquota.ps1'
+  $daemonHelperHold=[IO.FileStream]::new($daemonHelper,[IO.FileMode]::Open,[IO.FileAccess]::Read,[IO.FileShare]::Read);$holds.Add($daemonHelperHold)
+  if((Hash-File $daemonHelper) -ne '9c39fbaac896595dbdfb1916082d859c42dfa12b4a9c9542111202029620c78e'){throw 'Foreign native daemon constructor'}
+  . $daemonHelper
+  if($VerifyNativeRunquotaControls){
+    $controlPath=Join-Path $SourceRoot 'ci/native-arm-runquota-controls.ps1'
+    $controlItem=Get-Item -LiteralPath $controlPath -Force
+    if($controlItem.PSIsContainer -or ($controlItem.Attributes -band [IO.FileAttributes]::ReparsePoint)){throw 'Foreign native daemon control source'}
+    $controlStream=[IO.FileStream]::new($controlPath,[IO.FileMode]::Open,[IO.FileAccess]::Read,[IO.FileShare]::Read);$holds.Add($controlStream)
+    if((Hash-File $controlPath) -ne '0b01a805a54a234d53b32cafe6c3ace93a1302b31d160f7bf08e56491add555b'){throw 'Native daemon control source mismatch'}
+    . $controlPath
+    Test-NativeRunquotaRefusals $reproPath $selectedPath
+  }
+  $nativeRunquotad=Build-NativeRunquota $reproPath $selectedPath
+  if($VerifyNativeRunquotaControls){Confirm-NativeRunquotaPositive $nativeRunquotad}
   $graphText=Run-Stage 'actual-native-profile-graph' $reproPath @('graph','test','--json','--tool-provisioning=path') $SourceRoot $selectedPath
   $graph=$graphText|ConvertFrom-Json -Depth 100
   if($graph.schemaId -ne 'reprobuild.graph.build.v1' -or $graph.toolProvisioning -ne 'path'){throw 'Foreign native graph provisioning'}
@@ -464,6 +481,8 @@ try {
     if(@($edge.env|Where-Object {$_ -eq ('LIBVTERM_NATIVE_ARM_CLANG='+$clang)}).Count -ne 1){throw 'Native edge compiler projection changed'}
     if(@($edge.inputs|Where-Object {[IO.Path]::GetFullPath($_,$SourceRoot).Equals($profilePath,[StringComparison]::OrdinalIgnoreCase)}).Count -ne 1){throw 'Native edge omits declared profile input'}
   }
+  if((Require-PE $nativeRunquotad 0xAA64).sha256 -ne $receipt.nativeRunquota.daemon.sha256){throw 'Admitted daemon changed after graph'}
+  Append-HeldCommand $env:GITHUB_ENV ([Text.Encoding]::UTF8.GetBytes('RUNQUOTAD_BIN='+$nativeRunquotad+[char]10)) 'native-daemon-environment'
   Assert-Profile
   if((Tree $native) -ne $nativeTreeBefore -or (Tree $zlib.sdk) -ne $zlib.sdkTree -or (Source-State) -ne $sourceBefore -or (Hash-File $inspectionPath) -ne $inspectionSHA -or (Hash-File $reproPath) -ne $reproBeforeSHA -or (Hash-File $providerPath) -ne $providerImage.sha256 -or (Hash-File $providerArtifactPath) -ne $providerArtifactSHA){throw 'Native graph authority changed'}
   $receipt.nativeGraph=[ordered]@{inspectionPath=$inspectionPath;inspectionSHA=$inspectionSHA;buildCount=$buildEdges.Count;executeCount=$executeEdges.Count;providerImage=$providerImage;providerCompileArtifactPath=$providerArtifactPath;providerCompileArtifactSHA=$providerArtifactSHA;providerCompiler=$nativeIdentity;providerCompilerSelection='Admitted supported exact766 REPRO_NIM_COMPILER environment plus held native frontend and actual AA64 provider output; durable artifact compilerCommand not decoded';selectedProfiles=$selectedProfiles;selectedJust=$selectedJust;graphMetadataGit=@{path=$gitImage;sha256=$gitSHA};scope='Actual resolved native graph only; original monitored bodies remain required'}
