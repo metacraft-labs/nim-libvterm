@@ -103,6 +103,14 @@ type
   CursorShape* = enum
     csBlock, csUnderline, csBar
 
+  MouseTracking* = enum
+    ## Which pointer events the application asked the terminal to report
+    ## (DEC private modes 1000, 1002, 1003; libvterm's VTERM_PROP_MOUSE).
+    mtNone   ## no reports
+    mtClick  ## 1000: presses, releases and the wheel
+    mtDrag   ## 1002: also motion while a button is held
+    mtMove   ## 1003: also motion with no button held
+
   HyperlinkId* = distinct uint32
   ImageRef* = distinct uint32
 
@@ -913,6 +921,16 @@ proc modifyOtherKeys*(s: Screen): int =
 
 proc mouseProtocol*(s: Screen): MouseProtocol =
   if s.inner == nil: mpNone else: mouseProtocol(s.inner.extended)
+
+proc mouseTracking*(s: Screen): MouseTracking =
+  ## The pointer events the application enabled; what a real terminal would
+  ## report to it.
+  if s.inner == nil: return mtNone
+  case s.inner.mouseProtocolNum
+  of 1: mtClick
+  of 2: mtDrag
+  of 3: mtMove
+  else: mtNone
 
 proc windowOps*(s: Screen): seq[WindowOp] =
   if s.inner == nil: @[] else: windowOps(s.inner.extended)
