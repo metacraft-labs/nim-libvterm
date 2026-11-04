@@ -8,4 +8,7 @@ nim-cache/
 tests/test_*
 !tests/test_*.nim
 !tests/*.sh
-.direnv/
+
+# Declared native ARM SDK and held profile are generated and authenticated by CI.
+/build/windows-zlib-sdk/
+/.repro/libvterm-native-arm/
