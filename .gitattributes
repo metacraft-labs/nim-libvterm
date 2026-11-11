@@ -1,0 +1,3 @@
+.github/scripts/native-arm-zlib-members.json -text
+# Keep the generated, byte-sensitive lock identical across Git checkouts.
+repro.lock text eol=lf

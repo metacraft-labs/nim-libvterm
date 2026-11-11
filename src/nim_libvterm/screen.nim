@@ -103,6 +103,14 @@ type
   CursorShape* = enum
     csBlock, csUnderline, csBar
 
+  MouseTracking* = enum
+    ## Which pointer events the application asked the terminal to report
+    ## (DEC private modes 1000, 1002, 1003; libvterm's VTERM_PROP_MOUSE).
+    mtNone   ## no reports
+    mtClick  ## 1000: presses, releases and the wheel
+    mtDrag   ## 1002: also motion while a button is held
+    mtMove   ## 1003: also motion with no button held
+
   HyperlinkId* = distinct uint32
   ImageRef* = distinct uint32
 
@@ -223,8 +231,9 @@ proc innerOf(user: pointer): ptr ScreenInner {.inline.} =
   # passed and the type is fixed by the wrapper.
   cast[ptr ScreenInner](user)
 
-proc settermPropThunk(prop: cint; val: ptr VTermValue;
+proc settermPropThunk(nativeProp: VTermProp; val: ptr VTermValue;
                       user: pointer): cint {.cdecl.} =
+  let prop = cint(nativeProp)
   let inner = innerOf(user)
   if val == nil: return 0
   if prop == VTERM_PROP_CURSORVISIBLE:
@@ -283,12 +292,13 @@ proc fallbackOscThunk(command: cint; frag: VTermStringFragment;
             int(pos.row), int(pos.col))
   result = 1
 
-proc fallbackDcsThunk(command: cstring; commandlen: csize_t;
+proc fallbackDcsThunk(nativeCommand: VTermConstCharPtr; commandlen: csize_t;
                       frag: VTermStringFragment;
                       user: pointer): cint {.cdecl.} =
   ## State-layer DCS fallback. libvterm itself only consumes
   ## `\x1bP$q...` (status-string queries); every other DCS -- including
   ## Sixel (final byte `q`) -- is routed here.
+  let command = cstring(nativeCommand)
   let inner = innerOf(user)
   var pos: VTermPos
   let state = vterm_obtain_state(inner.vt.p)
@@ -913,6 +923,16 @@ proc modifyOtherKeys*(s: Screen): int =
 
 proc mouseProtocol*(s: Screen): MouseProtocol =
   if s.inner == nil: mpNone else: mouseProtocol(s.inner.extended)
+
+proc mouseTracking*(s: Screen): MouseTracking =
+  ## The pointer events the application enabled; what a real terminal would
+  ## report to it.
+  if s.inner == nil: return mtNone
+  case s.inner.mouseProtocolNum
+  of 1: mtClick
+  of 2: mtDrag
+  of 3: mtMove
+  else: mtNone
 
 proc windowOps*(s: Screen): seq[WindowOp] =
   if s.inner == nil: @[] else: windowOps(s.inner.extended)
