@@ -222,7 +222,19 @@ function Run-Stage([string]$label,[string]$exe,[string[]]$arguments,[string]$wor
     $row.stdoutSHA=Hash-File $outPath;$row.stderrSHA=Hash-File $errPath;Save-Stage
     $row.imageAfterSHA=Hash-File $exe;Save-Stage
     if($row.imageAfterSHA -ne $row.imageSHA){throw 'Selected stage image changed'}
-    if($row.exit -ne 0){throw ('Native stage failed: '+$label)}
+    if($row.exit -ne 0){
+      # The captured streams live only under the temporary SDK root, so a failed
+      # stage was otherwise reported as a bare exit with no cause in the job log.
+      # Print a bounded tail of each stream; the full files are retained as
+      # failure evidence by the handler at the end of this script.
+      foreach($stream in @(@('stderr',$errPath),@('stdout',$outPath))){
+        try {
+          $lines=@(Get-Content -LiteralPath $stream[1] -Tail 80 -ErrorAction Stop)
+          if($lines.Count){[Console]::Error.WriteLine("---- $label $($stream[0]) (exit $($row.exit), last $($lines.Count) lines) ----");foreach($l in $lines){[Console]::Error.WriteLine($l)}}
+        } catch {[Console]::Error.WriteLine("---- $label $($stream[0]) unreadable: $($_.Exception.Message) ----")}
+      }
+      throw ('Native stage failed: '+$label)
+    }
     [IO.File]::ReadAllText($outPath)
   } catch {
     $row.failure=$_.Exception.Message

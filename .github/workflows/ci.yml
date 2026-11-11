@@ -260,6 +260,7 @@ jobs:
         with:
           name: reprobuild-logs-${{ matrix.os }}-${{ matrix.arch }}
           path: |
+            native-arm-sdk-failure-evidence/
             .repro/build/*/build-failure-report.json
             .repro/windows-native-provenance/*.json
             .repro/build/*/*-tool-identities.inspect.json
