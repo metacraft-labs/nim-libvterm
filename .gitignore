@@ -8,6 +8,7 @@ nim-cache/
 tests/test_*
 !tests/test_*.nim
 !tests/*.sh
+!tests/*.py
 
 # Declared native ARM SDK and held profile are generated and authenticated by CI.
 /build/windows-zlib-sdk/

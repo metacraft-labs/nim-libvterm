@@ -87,18 +87,28 @@ jobs:
 
       - name: Setup dev env (reprobuild flavor)
         # Source mode supplies the verified CLI and staged Nix helper.
-        uses: metacraft-labs/metacraft-github-actions/setup-dev-env@dev
+        uses: metacraft-labs/metacraft-github-actions/setup-dev-env@e2b9947768dccce6de2687a495c8286df4d6de96
         with:
           env-flavor: reprobuild
           repro-from-source: ${{ runner.os != 'Windows' && 'true' || 'false' }}
-          repro-build-pin: "76659f5730ecf698b1963c656494d2cb66eb256d"
+          # Reprobuild v0.2.20. The engine reads the committed v3 lock; older
+          # engines fail with "unsupported lock schema ...v3 (expected ...v2)".
+          # Keep the bootstrap libraries at that engine's own flake-lock
+          # revisions (tests/test_ci_engine_reads_committed_lock.py checks both
+          # workflows). Windows installs the latest released CLI (setup-dev-env
+          # passes no repro-version) instead of building from source, so these
+          # pins do not apply to it.
+          repro-build-pin: a650b2034947eba87c809b1a7c9169f489aebd24
+          repro-runquota-pin: 9818dc0c90be8ba7993424a7bbfbb6e009ffa965
+          repro-io-mon-pin: e05beda08343b04b3d53f008ebcd0fe7bd27d8b1
+          repro-stackable-hooks-pin: 75334780682e70b1adb58bf813d869e7f5df63f5
           gh-token: ${{ steps.ci_token.outputs.token }}
 
       - name: Assert measured Unix Repro artifacts
         if: runner.os != 'Windows'
         run: |
           set -euo pipefail
-          test "$(git -C .reprobuild-src rev-parse HEAD)" = 76659f5730ecf698b1963c656494d2cb66eb256d
+          test "$(git -C .reprobuild-src rev-parse HEAD)" = a650b2034947eba87c809b1a7c9169f489aebd24
           test -z "$(git -C .reprobuild-src status --porcelain)"
           test "$(command -v repro)" = "$GITHUB_WORKSPACE/.reprobuild-src/build/bin/repro"
           test "${REPROBUILD_NIX_DAEMON_BIN:?missing staged helper}" = "$GITHUB_WORKSPACE/.reprobuild-src/build/bin/reprobuild-nix-daemon"
@@ -106,6 +116,11 @@ jobs:
           "$REPROBUILD_NIX_DAEMON_BIN" --help
           printf 'source=%s cli=%s helper=%s\n' "$(git -C .reprobuild-src rev-parse HEAD)" "$(command -v repro)" "$REPROBUILD_NIX_DAEMON_BIN"
           repro --version
+
+      - name: Verify CI engine reads the committed lock
+        if: matrix.os == 'linux'
+        shell: bash
+        run: dev-exec python3 tests/test_ci_engine_reads_committed_lock.py --reprobuild .reprobuild-src
 
       - name: Provision the owning native Windows x64 SDK
         if: runner.os == 'Windows' && matrix.arch == 'x64'
@@ -145,19 +160,31 @@ jobs:
         working-directory: ${{ runner.os == 'Windows' && matrix.arch == 'arm64' && 'native-owning-source' || '.' }}
         run: dev-exec powershell -NoProfile -NonInteractive -ExecutionPolicy Bypass -File .github/scripts/windows-native-provenance.ps1
 
+      - name: Refresh authentication before repro build
+        if: runner.os != 'Windows'
+        uses: metacraft-labs/metacraft-github-actions/refresh-build-auth@bcd29c631ff01fbd0e577c5f96e5f9d5211fed26
+        with:
+          app-id: ${{ secrets.CI_TOKEN_PROVIDER_APP_ID || vars.CI_TOKEN_PROVIDER_APP_ID }}
+          private-key: ${{ secrets.CI_TOKEN_PROVIDER_PRIVATE_KEY }}
+          owner: metacraft-labs
+
       - name: repro build
         # Build the owning complete 39-module terminal corpus.
-        env:
-          REPRO_PROVISIONING_CONTRIBUTOR: ${{ runner.os != 'Windows' && 'libvterm-owning-nim-zlib-sdk' || '' }}
         working-directory: ${{ runner.os == 'Windows' && matrix.arch == 'arm64' && 'native-owning-source' || '.' }}
-        run: dev-exec repro build ${{ runner.os != 'Windows' && '--tool-provisioning=nix' || (matrix.arch == 'arm64' && '--tool-provisioning=path' || '') }}
+        run: ${{ runner.os != 'Windows' && 'nix develop . --no-update-lock-file --command repro build --tool-provisioning=path' || format('dev-exec repro build {0}', matrix.arch == 'arm64' && '--tool-provisioning=path' || '') }}
+
+      - name: Refresh authentication before repro test
+        if: runner.os != 'Windows'
+        uses: metacraft-labs/metacraft-github-actions/refresh-build-auth@bcd29c631ff01fbd0e577c5f96e5f9d5211fed26
+        with:
+          app-id: ${{ secrets.CI_TOKEN_PROVIDER_APP_ID || vars.CI_TOKEN_PROVIDER_APP_ID }}
+          private-key: ${{ secrets.CI_TOKEN_PROVIDER_PRIVATE_KEY }}
+          owner: metacraft-labs
 
       - name: repro test
         # Materialises the `test` collection.
-        env:
-          REPRO_PROVISIONING_CONTRIBUTOR: ${{ runner.os != 'Windows' && 'libvterm-owning-nim-zlib-sdk' || '' }}
         working-directory: ${{ runner.os == 'Windows' && matrix.arch == 'arm64' && 'native-owning-source' || '.' }}
-        run: dev-exec repro test ${{ runner.os != 'Windows' && '--tool-provisioning=nix' || (matrix.arch == 'arm64' && '--tool-provisioning=path' || '') }}
+        run: ${{ runner.os != 'Windows' && 'nix develop . --no-update-lock-file --command repro test --tool-provisioning=path' || format('dev-exec repro test {0}', matrix.arch == 'arm64' && '--tool-provisioning=path' || '') }}
 
       - name: Bind the action-selected native Windows Nim
         if: runner.os == 'Windows' && runner.arch == 'X64'
@@ -165,12 +192,28 @@ jobs:
         working-directory: ${{ runner.os == 'Windows' && matrix.arch == 'arm64' && 'native-owning-source' || '.' }}
         run: ./.github/scripts/bind-selected-native-nim.ps1
 
+      - name: Refresh authentication before just build
+        if: runner.os != 'Windows'
+        uses: metacraft-labs/metacraft-github-actions/refresh-build-auth@bcd29c631ff01fbd0e577c5f96e5f9d5211fed26
+        with:
+          app-id: ${{ secrets.CI_TOKEN_PROVIDER_APP_ID || vars.CI_TOKEN_PROVIDER_APP_ID }}
+          private-key: ${{ secrets.CI_TOKEN_PROVIDER_PRIVATE_KEY }}
+          owner: metacraft-labs
+
       - name: just build (cross-check)
         # Re-runs the original `just build` through the owning committed flake so
         # we catch silent divergences between `repro build` outputs
         # and what the dev shell + Justfile produce today.
         working-directory: ${{ runner.os == 'Windows' && matrix.arch == 'arm64' && 'native-owning-source' || '.' }}
         run: ${{ runner.os != 'Windows' && 'nix develop . --no-update-lock-file --command just build' || 'dev-exec just build' }}
+
+      - name: Refresh authentication before just test
+        if: runner.os != 'Windows'
+        uses: metacraft-labs/metacraft-github-actions/refresh-build-auth@bcd29c631ff01fbd0e577c5f96e5f9d5211fed26
+        with:
+          app-id: ${{ secrets.CI_TOKEN_PROVIDER_APP_ID || vars.CI_TOKEN_PROVIDER_APP_ID }}
+          private-key: ${{ secrets.CI_TOKEN_PROVIDER_PRIVATE_KEY }}
+          owner: metacraft-labs
 
       - name: just test (cross-check)
         working-directory: ${{ runner.os == 'Windows' && matrix.arch == 'arm64' && 'native-owning-source' || '.' }}

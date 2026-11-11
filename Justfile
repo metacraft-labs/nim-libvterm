@@ -233,3 +233,9 @@ bench-quick:
 # Runs `nix develop`, so it is not part of the in-shell test recipes.
 test-dev-shell:
     bash tests/test_dev_shell_writes_nothing_elsewhere.sh
+
+# Compile each workflow-selected engine's real reader against the shipping lock.
+# Needs an adjacent Reprobuild Git checkout containing the selected revision
+# (or --reprobuild <dir>) and python3.
+test-ci-engine-lock:
+    python3 tests/test_ci_engine_reads_committed_lock.py
