@@ -135,7 +135,7 @@ jobs:
       - name: Verify CI engine reads the committed lock
         if: matrix.os == 'linux'
         shell: bash
-        run: dev-exec python3 tests/test_ci_engine_reads_committed_lock.py --reprobuild .reprobuild-src
+        run: nix develop . --no-update-lock-file --command python3 tests/test_ci_engine_reads_committed_lock.py --reprobuild .reprobuild-src
 
       - name: Provision the owning native Windows x64 SDK
         if: runner.os == 'Windows' && matrix.arch == 'x64'

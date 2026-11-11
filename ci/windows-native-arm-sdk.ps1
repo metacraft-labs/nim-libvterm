@@ -422,7 +422,7 @@ try {
   $selectedPath=[String]::Join(';',@($profile.nimBin,$profile.clangBin,$profile.justBin,(Split-Path $gitImage)))
   $daemonHelper=Join-Path $SourceRoot 'ci/native-arm-runquota.ps1'
   $daemonHelperHold=[IO.FileStream]::new($daemonHelper,[IO.FileMode]::Open,[IO.FileAccess]::Read,[IO.FileShare]::Read);$holds.Add($daemonHelperHold)
-  if((Hash-File $daemonHelper) -ne '9c39fbaac896595dbdfb1916082d859c42dfa12b4a9c9542111202029620c78e'){throw 'Foreign native daemon constructor'}
+  if((Hash-File $daemonHelper) -ne '4cfa0ba1f5935c8904d4590325be42b7740e43a1662d973ab64042e766fc34c5'){throw 'Foreign native daemon constructor'}
   . $daemonHelper
   if($VerifyNativeRunquotaControls){
     $controlPath=Join-Path $SourceRoot 'ci/native-arm-runquota-controls.ps1'
