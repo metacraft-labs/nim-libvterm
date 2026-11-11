@@ -16,11 +16,35 @@ try {
   foreach ($file in $census.sourceFiles) {
     if (-not $before.Contains($file.path) -or $before[$file.path] -ne $file.sha256) { throw 'Current source differs from pre-typed census.' }
   }
-  $inspectionPath = Join-Path $root '.repro/build/repro/path-only-tool-identities.inspect.json'
-  $inspection = Get-Content -Raw -LiteralPath $inspectionPath | ConvertFrom-Json
-  if ($inspection.projectName -ne 'nim_libvterm') { throw 'Foreign selected tool inspection.' }
-  $profiles = @($inspection.profiles | Where-Object { $_.packageSelector -eq 'nim' -or $_.executableName -eq 'nim' })
-  if ($profiles.Count -ne 1) { throw 'Missing or ambiguous selected Nim profile.' }
+  # Read the keyed tool-identity entries, not the stable
+  # `path-only-tool-identities.inspect.json`: the stable file holds whichever
+  # resolution in this checkout ran LAST, and `repro test` (whose target
+  # closure names no declared tool) runs after `repro build` and rewrites it
+  # with `"profiles": []` (keyedToolIdentityPaths in repro_cli_support.nim
+  # documents the stable files as non-authoritative). Each keyed entry is the
+  # identity resolved for one key; the selected Nim must be one and the same
+  # in every entry that names a Nim.
+  $cacheDirectory = Join-Path $root '.repro/build/repro/tool-identity-cache'
+  $selected = @{}
+  $fingerprints = @{}
+  foreach ($entry in @(Get-ChildItem -LiteralPath $cacheDirectory -Filter '*.inspect.json' -File)) {
+    $candidate = Get-Content -Raw -LiteralPath $entry.FullName | ConvertFrom-Json
+    if ($candidate.projectName -ne 'nim_libvterm') { throw 'Foreign selected tool inspection.' }
+    # Every entry in this checkout must come from the same project interface
+    # (the same repro.nim); an entry left by another interface is not evidence
+    # about the Nim that built these tests.
+    $fingerprints[[string]$candidate.interfaceFingerprint] = $true
+    $found = @($candidate.profiles | Where-Object { $_.packageSelector -eq 'nim' -or $_.executableName -eq 'nim' })
+    if ($found.Count -eq 0) { continue }
+    if ($found.Count -ne 1) { throw 'Missing or ambiguous selected Nim profile.' }
+    $identity = ($found[0].installMethod, $found[0].packageId, $found[0].resolvedExecutablePath, $found[0].resolvedExecutableDigest, $found[0].selectedStorePath, $found[0].tarballSha256) -join '|'
+    if (-not $selected.ContainsKey($identity)) { $selected[$identity] = [pscustomobject]@{ path = $entry.FullName; profile = $found[0] } }
+  }
+  if ($fingerprints.Count -ne 1 -or $fingerprints.ContainsKey('')) { throw 'Foreign selected tool inspection.' }
+  if ($selected.Count -ne 1) { throw 'Missing or ambiguous selected Nim profile.' }
+  $chosen = @($selected.Values)[0]
+  $inspectionPath = $chosen.path
+  $profiles = @($chosen.profile)
   $profile = $profiles[0]
   $expectedVersion = '2.2.10'
   if ($profile.installMethod -eq 'path') {
