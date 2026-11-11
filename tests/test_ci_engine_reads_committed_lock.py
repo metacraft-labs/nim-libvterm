@@ -79,7 +79,14 @@ def main():
             archive = subprocess.check_output(['git', '-C', str(args.reprobuild),
                                                 'archive', revision, 'libs', 'flake.lock'])
             with tarfile.open(fileobj=io.BytesIO(archive)) as tar:
-                tar.extractall(work, filter='data')
+                # The archive is `git archive` output of a pinned, immutable
+                # Reprobuild revision (not untrusted input). Interpreters whose
+                # tarfile predates extraction filters (no `data_filter`) reject
+                # the `filter` keyword, so pass it only where it exists.
+                if hasattr(tarfile, 'data_filter'):
+                    tar.extractall(work, filter='data')
+                else:
+                    tar.extractall(work)
             (work / 'probe.nim').write_text(PROBE)
             (work / 'v2.lock').write_text(V2_CONTROL)
             (work / 'committed.lock').write_bytes(committed)

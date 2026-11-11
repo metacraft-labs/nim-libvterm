@@ -8,7 +8,7 @@ function Build-NativeRunquota([string]$reproPath,[string]$selectedPath) {
   $policyStream=[IO.FileStream]::new($policyPath,[IO.FileMode]::Open,[IO.FileAccess]::Read,[IO.FileShare]::Read);$holds.Add($policyStream)
   $policyBytes=[byte[]]::new($policyStream.Length);$offset=0
   while($offset -lt $policyBytes.Length){$n=$policyStream.Read($policyBytes,$offset,$policyBytes.Length-$offset);if($n -le 0){throw 'Short held daemon policy'};$offset+=$n}
-  if([Convert]::ToHexString([Security.Cryptography.SHA256]::HashData($policyBytes)).ToLowerInvariant() -ne '18ba0559375b9f13b3cd43f5de2bdd82ae635043d915099d18cafd211c950691'){throw 'Foreign native daemon policy'}
+  if([Convert]::ToHexString([Security.Cryptography.SHA256]::HashData($policyBytes)).ToLowerInvariant() -ne 'd77ddc014c0c5ec1f59b77053664602ada86787187b18bfbfe3cc62b3532d509'){throw 'Foreign native daemon policy'}
   $policy=[Text.Encoding]::UTF8.GetString($policyBytes)|ConvertFrom-Json -Depth 30
   function Hold-ExactFile([string]$path,[string]$expected) {
     $item=Get-Item -LiteralPath $path -Force
@@ -88,6 +88,6 @@ function Build-NativeRunquota([string]$reproPath,[string]$selectedPath) {
   Hold-ExactTree $source $policy.runquota;Hold-ExactTree $privateSource $policy.runquota;Hold-ExactTree $leaseRoot $policy.lease
   if((Require-PE $nativeNim 0xAA64).sha256 -ne $nimImage.sha256 -or (Require-PE $clang 0xAA64).sha256 -ne $backend.sha256){throw 'Daemon compiler changed'}
   $script:admittedNativeRunquotad=$daemon
-  $receipt.nativeRunquota=[ordered]@{releaseArchiveSHA256=$policy.releaseArchiveSHA256;leaseRevision=$policy.leaseRevision;leaseArchiveSHA256=$policy.leaseArchiveSHA256;sourcePolicySHA256='18ba0559375b9f13b3cd43f5de2bdd82ae635043d915099d18cafd211c950691';daemon=$daemonImage;version=$version;compiler=$nimImage;backend=$backend;scope='Real native daemon prerequisite only; no admission/product acceptance; CLI retains daemon lifecycle'}
+  $receipt.nativeRunquota=[ordered]@{releaseArchiveSHA256=$policy.releaseArchiveSHA256;leaseRevision=$policy.leaseRevision;leaseArchiveSHA256=$policy.leaseArchiveSHA256;sourcePolicySHA256='d77ddc014c0c5ec1f59b77053664602ada86787187b18bfbfe3cc62b3532d509';daemon=$daemonImage;version=$version;compiler=$nimImage;backend=$backend;scope='Real native daemon prerequisite only; no admission/product acceptance; CLI retains daemon lifecycle'}
   return $daemon
 }
