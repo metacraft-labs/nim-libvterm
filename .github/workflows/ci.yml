@@ -91,24 +91,24 @@ jobs:
         with:
           env-flavor: reprobuild
           repro-from-source: ${{ runner.os != 'Windows' && 'true' || 'false' }}
-          # Reprobuild v0.2.20. The engine reads the committed v3 lock; older
+          # Reprobuild v0.2.23. The engine reads the committed v3 lock; older
           # engines fail with "unsupported lock schema ...v3 (expected ...v2)".
           # Keep the bootstrap libraries at that engine's own flake-lock
           # revisions (tests/test_ci_engine_reads_committed_lock.py checks both
           # workflows). Windows installs the latest released CLI (setup-dev-env
           # passes no repro-version) instead of building from source, so these
           # pins do not apply to it.
-          repro-build-pin: a650b2034947eba87c809b1a7c9169f489aebd24
+          repro-build-pin: 9dbf4e710d7cc0b9a79a4bcd54c931afb6849dd0
           repro-runquota-pin: 9818dc0c90be8ba7993424a7bbfbb6e009ffa965
-          repro-io-mon-pin: e05beda08343b04b3d53f008ebcd0fe7bd27d8b1
-          repro-stackable-hooks-pin: 75334780682e70b1adb58bf813d869e7f5df63f5
+          repro-io-mon-pin: 7a9b2f331024f4bc0b952bcab89b1dc48525d804
+          repro-stackable-hooks-pin: c1d55ce33fb2a29e4cf8d8bdbe1713f355370d0a
           gh-token: ${{ steps.ci_token.outputs.token }}
 
       - name: Assert measured Unix Repro artifacts
         if: runner.os != 'Windows'
         run: |
           set -euo pipefail
-          test "$(git -C .reprobuild-src rev-parse HEAD)" = a650b2034947eba87c809b1a7c9169f489aebd24
+          test "$(git -C .reprobuild-src rev-parse HEAD)" = 9dbf4e710d7cc0b9a79a4bcd54c931afb6849dd0
           test -z "$(git -C .reprobuild-src status --porcelain)"
           test "$(command -v repro)" = "$GITHUB_WORKSPACE/.reprobuild-src/build/bin/repro"
           test "${REPROBUILD_NIX_DAEMON_BIN:?missing staged helper}" = "$GITHUB_WORKSPACE/.reprobuild-src/build/bin/reprobuild-nix-daemon"
