@@ -94,8 +94,9 @@ try {
       if ((Get-Item -LiteralPath $path).Attributes -band [System.IO.FileAttributes]::ReparsePoint) { throw 'Native PATH compiler member is a reparse alias.' }
     }
     $cursor = $prefix
+      # -Force: AppData and similar profile directories carry the Hidden attribute, which Get-Item refuses without it.
     while ($cursor) {
-      if ((Get-Item -LiteralPath $cursor).Attributes -band [System.IO.FileAttributes]::ReparsePoint) { throw 'Native PATH prefix traverses a reparse alias.' }
+      if ((Get-Item -Force -LiteralPath $cursor).Attributes -band [System.IO.FileAttributes]::ReparsePoint) { throw 'Native PATH prefix traverses a reparse alias.' }
       $cursor = [System.IO.Path]::GetDirectoryName($cursor)
     }
     $files = [ordered]@{ 'bin/nim.exe'=$candidates[0].sha256 }
@@ -205,7 +206,7 @@ finally {
     try {
       $cursor = $prefix
       while ($cursor) {
-        if ((Get-Item -LiteralPath $cursor).Attributes -band [System.IO.FileAttributes]::ReparsePoint) { throw 'Native PATH ancestry changed to a reparse alias.' }
+        if ((Get-Item -Force -LiteralPath $cursor).Attributes -band [System.IO.FileAttributes]::ReparsePoint) { throw 'Native PATH ancestry changed to a reparse alias.' }
         $cursor = [System.IO.Path]::GetDirectoryName($cursor)
       }
       $bin = Get-Item -LiteralPath (Join-Path $prefix 'bin')
