@@ -934,6 +934,22 @@ proc mouseTracking*(s: Screen): MouseTracking =
   of 3: mtMove
   else: mtNone
 
+proc takeReplies*(s: var Screen): string =
+  ## The bytes the emulated terminal would send BACK to the program since the
+  ## last call, in order: its answers to the queries the program wrote
+  ## (Primary and Secondary Device Attributes, the cursor position report
+  ## `CSI 6 n` and DECXCPR `CSI ? 6 n`, DSR 5, DECRQM, DECRQSS, XTVERSION).
+  ## libvterm queues them while `feed` parses the queries; nothing is sent
+  ## anywhere until the caller writes them to the program, as a terminal does.
+  ## Taking them empties the queue.
+  if s.inner == nil: return ""
+  let vt = s.inner.vt.p
+  let n = int(vterm_output_get_buffer_current(vt))
+  if n == 0: return ""
+  result = newString(n)
+  let got = int(vterm_output_read(vt, cstring(result), csize_t(n)))
+  result.setLen(got)
+
 proc windowOps*(s: Screen): seq[WindowOp] =
   if s.inner == nil: @[] else: windowOps(s.inner.extended)
 

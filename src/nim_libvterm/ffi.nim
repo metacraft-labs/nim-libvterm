@@ -370,6 +370,8 @@ proc vterm_set_size*(vt: ptr VTerm; rows, cols: cint)
 proc vterm_set_utf8*(vt: ptr VTerm; isUtf8: cint)
 proc vterm_get_utf8*(vt: ptr VTerm): cint
 proc vterm_input_write*(vt: ptr VTerm; bytes: cstring; len: csize_t): csize_t
+proc vterm_output_get_buffer_current*(vt: ptr VTerm): csize_t
+proc vterm_output_read*(vt: ptr VTerm; buffer: cstring; len: csize_t): csize_t
 
 proc vterm_obtain_state*(vt: ptr VTerm): ptr VTermState
 proc vterm_obtain_screen*(vt: ptr VTerm): ptr VTermScreen

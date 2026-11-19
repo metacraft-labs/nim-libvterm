@@ -51,20 +51,52 @@ try {
   $expectedVersion = '2.2.10'
   if ($profile.installMethod -eq 'path') {
     $expectedVersion = '2.2.8'
+    # REVIEWED IDENTITY, re-reviewed 2026-11-18 for the fleet-pinned engine
+    # (operator decision on isonim-pm issues/2026-11-18-nim-libvterm-windows-
+    # x64-native-nim-binding-rejects-the-nim-the-fleet-pinned-engine-selects.md,
+    # which holds the review evidence). The engine provisions Nim 2.2.8 from
+    # https://nim-lang.org/download/nim-2.2.8_x64.zip, archive sha256
+    # 11fe2415a64a791b899cc78e2eeacdde93b5f122f2fabc447db36d38002bfb8c
+    # (windows/toolchain-versions.env NIM_WIN_X64_SHA256), into
+    # %LOCALAPPDATA%\reprobuild\toolchains\nim\2.2.8\prebuilt\nim-2.2.8.
+    # That archive's bin/nim.exe has SHA-256 6179EC4B...; reprobuild's
+    # windows/raise-nim-stack.ps1 patches SizeOfStackReserve to 128 MiB in place
+    # on hosts that ran a reprobuild release job (observed on win-ci-bare-001),
+    # giving 1670A23F... (verified: the archive's nim.exe with that one field
+    # set to 134217728 hashes to exactly that). These two exact identities are
+    # the whole review; there is no pattern. The review binds to the engine
+    # source revision below, so a new engine pin is a deliberate re-review.
+    $reviewedEngine = '84b459adda91535f0b89424dfc95aa34bfa67a32'
+    $engineHead = (& git -C (Join-Path $root '.reprobuild-src') rev-parse HEAD).Trim()
+    if ($LASTEXITCODE -ne 0 -or $engineHead -ne $reviewedEngine) { throw "The reviewed native Nim identity covers reprobuild $reviewedEngine, not '$engineHead'; re-review the Nim the new engine provisions." }
+    if ([string]::IsNullOrEmpty($env:LOCALAPPDATA)) { throw 'LOCALAPPDATA is unset; cannot locate the engine-provisioned Nim.' }
+    $reviewedPrefix = [System.IO.Path]::GetFullPath((Join-Path $env:LOCALAPPDATA 'reprobuild\toolchains\nim\2.2.8\prebuilt\nim-2.2.8'))
+    $reviewedArchiveSha = '11fe2415a64a791b899cc78e2eeacdde93b5f122f2fabc447db36d38002bfb8c'
+    $reviewedIdentities = @(
+      @{ blake3 = 'blake3:8d42d677439c59b4c4ab37ac62b8f5a707aca621f9e15ada89b81321b28c166a'; sha256 = '6179EC4B30EE26F6352E55B915603554E2C86F1D38895698156EFB54A5438A84' },
+      @{ blake3 = 'blake3:36b62021a40c9e0101b7f8017478534a151cee6e4c7ce3af5b4fd18ad1946fa8'; sha256 = '1670A23F7292F271C667447C754BBE0EF04756776992672ED8E3DE40EF94B8D9' }
+    )
     $nim = [System.IO.Path]::GetFullPath($profile.resolvedExecutablePath)
-    if ($profile.packageSelector -ne 'nim' -or $profile.packageId -ne 'nim' -or $profile.executableName -ne 'nim' -or $profile.declaredExecutablePath -ne 'nim' -or $nim -ne 'C:\dev-deps\nim\bin\nim.exe' -or $profile.resolvedExecutableDigest -ne 'blake3:8d42d677439c59b4c4ab37ac62b8f5a707aca621f9e15ada89b81321b28c166a' -or $profile.selectedStorePath -ne '' -or $profile.lockIdentity -ne '' -or @($profile.realizedStorePaths).Count -ne 0 -or $profile.tarballUrl -ne '' -or $profile.tarballSha256 -ne '') { throw 'Unreviewed native PATH Nim profile.' }
-    $applications = @(@(Get-Command nim -CommandType Application -All -ErrorAction Stop).Source | ForEach-Object { [System.IO.Path]::GetFullPath($_) } | Sort-Object -Unique)
-    if ($applications.Count -ne 1 -or $applications[0] -ne $nim) { throw 'Native PATH lookup is ambiguous or differs from the selected action.' }
-    $candidates = @(@($census.executables | Where-Object name -eq 'nim').executableCandidates)
-    if ($candidates.Count -ne 1 -or [System.IO.Path]::GetFullPath($candidates[0].path) -ne $nim -or $candidates[0].sha256 -ne '6179EC4B30EE26F6352E55B915603554E2C86F1D38895698156EFB54A5438A84') { throw 'Selected native PATH compiler differs from the source-bound census.' }
+    $reviewed = @($reviewedIdentities | Where-Object { $_.blake3 -eq $profile.resolvedExecutableDigest })
+    if ($reviewed.Count -ne 1 -or $profile.packageSelector -ne 'nim' -or $profile.packageId -ne 'nim' -or $profile.executableName -ne 'nim' -or $profile.declaredExecutablePath -ne 'nim' -or $nim -ne (Join-Path $reviewedPrefix 'bin\nim.exe') -or $profile.selectedStorePath -ne '' -or $profile.lockIdentity -ne '' -or @($profile.realizedStorePaths).Count -ne 0 -or $profile.tarballUrl -ne '' -or $profile.tarballSha256 -ne '') { throw 'Unreviewed native PATH Nim profile.' }
+    $archiveMarker = (Get-Content -LiteralPath (Join-Path (Split-Path $reviewedPrefix -Parent) 'nim.archive.sha256') -ErrorAction Stop | Select-Object -First 1).Trim().ToLowerInvariant()
+    if ($archiveMarker -ne $reviewedArchiveSha) { throw 'Engine-provisioned Nim was not installed from the reviewed archive.' }
+    # Later steps see the selected compiler first (it is added to GITHUB_PATH
+    # below); make this step see the same PATH before checking the lookup.
+    $env:PATH = (Join-Path ([System.IO.Path]::GetDirectoryName([System.IO.Path]::GetDirectoryName($nim))) 'bin') + [System.IO.Path]::PathSeparator + $env:PATH
+    $applications = @(@(Get-Command nim -CommandType Application -All -ErrorAction Stop).Source | ForEach-Object { [System.IO.Path]::GetFullPath($_) })
+    if ($applications.Count -lt 1 -or $applications[0] -ne $nim) { throw 'Native PATH lookup differs from the selected action.' }
+    $candidates = @(@(@($census.executables | Where-Object name -eq 'nim').executableCandidates) | Where-Object { [System.IO.Path]::GetFullPath($_.path) -eq $nim })
+    if ($candidates.Count -ne 1 -or $candidates[0].sha256 -ne $reviewed[0].sha256) { throw 'Selected native PATH compiler differs from the source-bound census.' }
     if ((Get-FileHash -LiteralPath $nim -Algorithm SHA256).Hash -ne $candidates[0].sha256) { throw 'Selected native PATH executable bytes changed.' }
     $prefix = [System.IO.Path]::GetDirectoryName([System.IO.Path]::GetDirectoryName($nim))
     foreach ($path in @($nim, (Join-Path $prefix 'bin'), (Join-Path $prefix 'config'), (Join-Path $prefix 'lib'))) {
       if ((Get-Item -LiteralPath $path).Attributes -band [System.IO.FileAttributes]::ReparsePoint) { throw 'Native PATH compiler member is a reparse alias.' }
     }
     $cursor = $prefix
+      # -Force: AppData and similar profile directories carry the Hidden attribute, which Get-Item refuses without it.
     while ($cursor) {
-      if ((Get-Item -LiteralPath $cursor).Attributes -band [System.IO.FileAttributes]::ReparsePoint) { throw 'Native PATH prefix traverses a reparse alias.' }
+      if ((Get-Item -Force -LiteralPath $cursor).Attributes -band [System.IO.FileAttributes]::ReparsePoint) { throw 'Native PATH prefix traverses a reparse alias.' }
       $cursor = [System.IO.Path]::GetDirectoryName($cursor)
     }
     $files = [ordered]@{ 'bin/nim.exe'=$candidates[0].sha256 }
@@ -174,7 +206,7 @@ finally {
     try {
       $cursor = $prefix
       while ($cursor) {
-        if ((Get-Item -LiteralPath $cursor).Attributes -band [System.IO.FileAttributes]::ReparsePoint) { throw 'Native PATH ancestry changed to a reparse alias.' }
+        if ((Get-Item -Force -LiteralPath $cursor).Attributes -band [System.IO.FileAttributes]::ReparsePoint) { throw 'Native PATH ancestry changed to a reparse alias.' }
         $cursor = [System.IO.Path]::GetDirectoryName($cursor)
       }
       $bin = Get-Item -LiteralPath (Join-Path $prefix 'bin')
@@ -197,8 +229,8 @@ finally {
       foreach ($relative in $proof.nativePathMatchedFiles.Keys) {
         if (-not $current.Contains($relative) -or $current[$relative] -ne $proof.nativePathMatchedFiles[$relative]) { throw 'Native PATH compiler closure changed during binding.' }
       }
-      $applications = @(@(Get-Command nim -CommandType Application -All -ErrorAction Stop).Source | ForEach-Object { [System.IO.Path]::GetFullPath($_) } | Sort-Object -Unique)
-      if ($applications.Count -ne 1 -or $applications[0] -ne $nim) { throw 'Final native PATH lookup differs from selected compiler.' }
+      $applications = @(@(Get-Command nim -CommandType Application -All -ErrorAction Stop).Source | ForEach-Object { [System.IO.Path]::GetFullPath($_) })
+      if ($applications.Count -lt 1 -or $applications[0] -ne $nim) { throw 'Final native PATH lookup differs from selected compiler.' }
       $proof.finalNativePathMatchedFiles = $current
     } catch { $proof.failure = $_.Exception.Message }
   }
