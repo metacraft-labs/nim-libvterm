@@ -239,3 +239,10 @@ test-dev-shell:
 # (or --reprobuild <dir>) and python3.
 test-ci-engine-lock:
     python3 tests/test_ci_engine_reads_committed_lock.py
+
+# Check that the native Windows ARM64 runquota policy names no pinned values and
+# that its PowerShell derivation resolves the workflow engine pin. Needs pwsh,
+# adjacent reprobuild and runquota Git checkouts (or --reprobuild/--runquota)
+# and network access for the nim-shm-lease fetch.
+test-native-arm-runquota-policy:
+    python3 tests/test_native_arm_runquota_policy.py

@@ -18,7 +18,7 @@ function Test-NativeRunquotaRefusals([string]$reproPath,[string]$selectedPath) {
     $rows.Add([ordered]@{name=$name;refused=$true;failure=$failure;newNativeStages=0;scope='Real production precondition/PE refusal, not a fake daemon or admission success'})
   }
   Expect-Refusal 'missing-image' 'Cannot find path|does not exist|Could not find' {Require-PE (Join-Path $controlRoot 'absent-runquotad.exe') 0xAA64|Out-Null}
-  # Existing selected release CLI really is x64; do not fabricate PE headers.
+  # The engine CLI built from source runs as x64; do not fabricate PE headers.
   $x64=Require-PE $reproPath 0x8664
   Expect-Refusal 'real-x64-image-rejected-as-native-daemon' 'Wrong native image architecture' {Require-PE $reproPath 0xAA64|Out-Null}
   foreach($pair in @(@('RUNQUOTAD_BIN',(Join-Path $controlRoot 'absent-runquotad.exe')),@('RUNQUOTAD_BIN',$clang),@('RUNQUOTAD_BIN',$reproPath),@('REPROBUILD_BYPASS_RUNQUOTA','1'))) {
@@ -29,23 +29,25 @@ function Test-NativeRunquotaRefusals([string]$reproPath,[string]$selectedPath) {
       Expect-Refusal ('inherited-'+$name+'-'+$rows.Count) 'Inherited admission selector refused' {Build-NativeRunquota $reproPath $selectedPath|Out-Null}
     } finally {Remove-Item ('Env:'+$name) -ErrorAction SilentlyContinue}
   }
-  # Authentic bytes are copied into a counted private mutant tree. Only this
-  # deliberately corrupt copy changes; the held production inputs stay intact.
+  # Authentic pinned bytes are exported into a counted private mutant tree.
+  # Only this deliberately corrupt copy changes; the production inputs and
+  # the held engine checkout stay intact.
   $policy=Get-Content -LiteralPath (Join-Path $SourceRoot 'ci/native-arm-runquota-policy.json') -Raw|ConvertFrom-Json -Depth 30
-  $releaseBin=Split-Path $reproPath;$releaseRoot=Split-Path $releaseBin
-  $fixture=Join-Path $controlRoot 'release';$fixtureBin=Join-Path $fixture 'bin';New-Item -ItemType Directory -Path $fixtureBin|Out-Null
-  foreach($member in $policy.releaseImages.PSObject.Properties){Copy-Item -LiteralPath (Join-Path $releaseBin $member.Name) -Destination (Join-Path $fixtureBin $member.Name)}
-  $source=Join-Path $releaseRoot 'share/repro/src/runquota';$mutantSource=Join-Path $fixture 'share/repro/src/runquota'
-  foreach($member in $policy.runquota.PSObject.Properties){$target=Join-Path $mutantSource $member.Name;[IO.Directory]::CreateDirectory((Split-Path $target))|Out-Null;Copy-Item -LiteralPath (Join-Path $source $member.Name) -Destination $target}
-  $mutantCli=Join-Path $fixtureBin ([IO.Path]::GetFileName($reproPath))
-  $first=@($policy.runquota.PSObject.Properties)[0].Name;$target=Join-Path $mutantSource $first;$original=[IO.File]::ReadAllBytes($target)
+  $engineRoot=Split-Path ([IO.Path]::GetFullPath($reproPath))
+  foreach($part in $policy.engine.binPath.Split('/')){$engineRoot=Split-Path $engineRoot}
+  Expect-Refusal 'foreign-engine-revision' 'Foreign engine revision' {Build-NativeRunquota $reproPath $selectedPath ('0'*40)|Out-Null}
+  $runquotaRepository=Join-Path (Split-Path $engineRoot) $policy.runquota.checkout
+  $pins=Resolve-NativeRunquotaPins $policy $engineRoot $EngineRevision $runquotaRepository
+  $mutantSource=Join-Path $controlRoot 'runquota'
+  $mutantMap=Export-PinnedGitTree $runquotaRepository $pins.runquotaRevision $policy.runquota.members $mutantSource
+  $first=@($mutantMap.PSObject.Properties)[0].Name;$target=Join-Path $mutantSource $first;$original=[IO.File]::ReadAllBytes($target)
   try {
     $changed=[byte[]]::new($original.Length+1);[Array]::Copy($original,$changed,$original.Length);$changed[$changed.Length-1]=10;[IO.File]::WriteAllBytes($target,$changed)
-    Expect-Refusal 'changed-released-source' 'Daemon source/image hash mismatch' {Build-NativeRunquota $mutantCli $selectedPath|Out-Null}
+    Expect-Refusal 'changed-pinned-source' 'Daemon source/image hash mismatch' {Hold-ExactTree $mutantSource $mutantMap}
   } finally {[IO.File]::WriteAllBytes($target,$original)}
   try {
     Remove-Item -LiteralPath $target
-    Expect-Refusal 'missing-released-source' 'Missing daemon source member' {Build-NativeRunquota $mutantCli $selectedPath|Out-Null}
+    Expect-Refusal 'missing-pinned-source' 'Missing daemon source member' {Hold-ExactTree $mutantSource $mutantMap}
   } finally {[IO.File]::WriteAllBytes($target,$original)}
   # Exercise the actual full helper compiler-hash branch. It authenticates the
   # real source+lease first; no compiler executes because the profile is wrong.
@@ -55,7 +57,7 @@ function Test-NativeRunquotaRefusals([string]$reproPath,[string]$selectedPath) {
     $profile.nimSHA256=('0'*64)
     Expect-Refusal 'changed-held-compiler-policy' 'Foreign native daemon compiler' {Build-NativeRunquota $reproPath $selectedPath|Out-Null}
   } finally {$profile.nimSHA256=$originalNimSHA;$root=$originalRoot}
-  if($rows.Count -ne 9){throw 'Incomplete real refusal inventory'}
+  if($rows.Count -ne 10){throw 'Incomplete real refusal inventory'}
   # A genuine syntax failure exercises unchanged Run-Stage primary-error,
   # natural direct wait and retained stderr; it is not a production stage pass.
   $productionReceipt=$receipt;$productionRoot=$root
@@ -81,7 +83,7 @@ function Test-NativeRunquotaRefusals([string]$reproPath,[string]$selectedPath) {
 }
 function Confirm-NativeRunquotaPositive([string]$daemon) {
   $image=Require-PE $daemon 0xAA64
-  if($image.sha256 -ne $receipt.nativeRunquota.daemon.sha256 -or $receipt.nativeRunquota.version -cne 'runquotad 0.1.3'){throw 'Actual native daemon positive differs'}
+  if($image.sha256 -ne $receipt.nativeRunquota.daemon.sha256 -or $receipt.nativeRunquota.version -cne $receipt.nativeRunquota.expectedVersion){throw 'Actual native daemon positive differs'}
   foreach($label in @('native-runquotad-compile','native-runquotad-version')){
     $matches=@($receipt.stages|Where-Object {$_.name -ceq $label})
     if($matches.Count -ne 1 -or $matches[0].exit -ne 0 -or -not $matches[0].started -or -not $matches[0].terminal -or $matches[0].imageSHA -cne $matches[0].imageAfterSHA){throw 'Missing genuine native daemon stage positive'}

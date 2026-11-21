@@ -102,6 +102,9 @@ jobs:
           # tests/test_ci_engine_reads_committed_lock.py checks that both
           # workflows build this engine, that it reads the committed v3 lock, and
           # that the companion pins match it.
+          # The native Windows ARM64 SDK step passes the same revision as
+          # -EngineRevision; tests/test_native_arm_runquota_policy.py checks
+          # that, and derives the runquota and nim-shm-lease revisions from it.
           repro-from-source: "true"
           repro-build-pin: 84b459adda91535f0b89424dfc95aa34bfa67a32
           repro-runquota-pin: f9e1a4d3f3ba7840aefe56883127653af9c5a608
@@ -143,6 +146,11 @@ jobs:
         shell: bash
         run: nix develop . --no-update-lock-file --command python3 tests/test_ci_engine_reads_committed_lock.py --reprobuild .reprobuild-src
 
+      - name: Verify the native ARM64 runquota inputs derive from the engine pin
+        if: matrix.os == 'linux'
+        shell: bash
+        run: nix develop . --no-update-lock-file --command python3 tests/test_native_arm_runquota_policy.py --reprobuild .reprobuild-src --runquota runquota
+
       - name: Provision the owning native Windows x64 SDK
         if: runner.os == 'Windows' && matrix.arch == 'x64'
         shell: pwsh
@@ -173,7 +181,7 @@ jobs:
         shell: pwsh
         working-directory: ${{ runner.os == 'Windows' && matrix.arch == 'arm64' && 'native-owning-source' || '.' }}
         run: |
-          ./ci/windows-native-arm-sdk.ps1 -OwnedPathHelper ./ci/native-python-owned-path.ps1 -SourceRoot "$env:GITHUB_WORKSPACE/native-owning-source" -SourceRevision '${{ github.sha }}' -FailureEvidenceDirectory "$env:GITHUB_WORKSPACE/native-arm-sdk-failure-evidence" -VerifyNativeRunquotaControls
+          ./ci/windows-native-arm-sdk.ps1 -OwnedPathHelper ./ci/native-python-owned-path.ps1 -SourceRoot "$env:GITHUB_WORKSPACE/native-owning-source" -SourceRevision '${{ github.sha }}' -EngineRevision '84b459adda91535f0b89424dfc95aa34bfa67a32' -FailureEvidenceDirectory "$env:GITHUB_WORKSPACE/native-arm-sdk-failure-evidence" -VerifyNativeRunquotaControls
 
       - name: Record native Windows executable provenance
         if: runner.os == 'Windows'

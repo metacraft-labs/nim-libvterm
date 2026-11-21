@@ -1,8 +1,9 @@
-param([Parameter(Mandatory=$true)][string]$OwnedPathHelper, [Parameter(Mandatory=$true)][string]$SourceRoot, [Parameter(Mandatory=$true)][string]$SourceRevision, [Parameter(Mandatory=$true)][string]$FailureEvidenceDirectory, [switch]$VerifyNativeRunquotaControls)
+param([Parameter(Mandatory=$true)][string]$OwnedPathHelper, [Parameter(Mandatory=$true)][string]$SourceRoot, [Parameter(Mandatory=$true)][string]$SourceRevision, [Parameter(Mandatory=$true)][string]$EngineRevision, [Parameter(Mandatory=$true)][string]$FailureEvidenceDirectory, [switch]$VerifyNativeRunquotaControls)
 $ErrorActionPreference='Stop'
 Set-StrictMode -Version Latest
 if (-not $IsWindows -or [Runtime.InteropServices.RuntimeInformation]::OSArchitecture.ToString() -ne 'Arm64') { throw 'This provider requires an actual native Windows ARM64 host' }
 if ($SourceRevision -notmatch '^[0-9a-f]{40}$') { throw 'Invalid exact owning revision' }
+if ($EngineRevision -cnotmatch '^[0-9a-f]{40}$') { throw 'Invalid exact engine revision' }
 $holds=[Collections.Generic.List[IDisposable]]::new()
 $activeStageChild=$null
 $script:admittedNativeRunquotad=$null
@@ -434,14 +435,14 @@ try {
   $selectedPath=[String]::Join(';',@($profile.nimBin,$profile.clangBin,$profile.justBin,(Split-Path $gitImage)))
   $daemonHelper=Join-Path $SourceRoot 'ci/native-arm-runquota.ps1'
   $daemonHelperHold=[IO.FileStream]::new($daemonHelper,[IO.FileMode]::Open,[IO.FileAccess]::Read,[IO.FileShare]::Read);$holds.Add($daemonHelperHold)
-  if((Hash-File $daemonHelper) -ne '18c0921e49dd87563af70f5e2932dbd7526dc0f648febf2ddd6f588b8183d250'){throw 'Foreign native daemon constructor'}
+  if((Hash-File $daemonHelper) -ne '975098dc6bc59ccec2777316820dda7e214b30dd8623ba501bf7dd66e5401c77'){throw 'Foreign native daemon constructor'}
   . $daemonHelper
   if($VerifyNativeRunquotaControls){
     $controlPath=Join-Path $SourceRoot 'ci/native-arm-runquota-controls.ps1'
     $controlItem=Get-Item -LiteralPath $controlPath -Force
     if($controlItem.PSIsContainer -or ($controlItem.Attributes -band [IO.FileAttributes]::ReparsePoint)){throw 'Foreign native daemon control source'}
     $controlStream=[IO.FileStream]::new($controlPath,[IO.FileMode]::Open,[IO.FileAccess]::Read,[IO.FileShare]::Read);$holds.Add($controlStream)
-    if((Hash-File $controlPath) -ne '0b01a805a54a234d53b32cafe6c3ace93a1302b31d160f7bf08e56491add555b'){throw 'Native daemon control source mismatch'}
+    if((Hash-File $controlPath) -ne 'e40e23bfa359ce861dd2997840397da59e42cf6a9ab6b3eeee7d6f0b2920cecc'){throw 'Native daemon control source mismatch'}
     . $controlPath
     Test-NativeRunquotaRefusals $reproPath $selectedPath
   }

@@ -138,6 +138,9 @@
               ++ [
                 pkgs.pre-commit
                 pkgs.python3
+                # tests/test_native_arm_runquota_policy.py runs the native
+                # Windows ARM64 runquota derivation functions under pwsh.
+                pkgs.powershell
               ]
               ++ preCommit.enabledPackages
               ++ pkgs.lib.optionals pkgs.stdenv.isLinux [
