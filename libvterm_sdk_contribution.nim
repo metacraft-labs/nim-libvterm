@@ -5,11 +5,16 @@ import repro_project_dsl
 const sdkSourceBytes = staticRead("libvterm_nim_zlib_sdk.nix") & "\0" & staticRead("flake.lock")
 let sdkIdentity = "blake3:" & blake3.toHex(blake3.digest(sdkSourceBytes))
 # Unix contributions bind the owning SDK; native Darwin qualification remains required.
-when defined(linux) or defined(macosx):
+# nim is the SDK's only on linux-arm64, where the SDK's Nim (from nim-fork) and
+# zlib-from-source are the intended realization. Elsewhere canonical nim is the
+# one nim contributor, so no consumer resolves two (see repro.nim).
+when defined(linux) and defined(arm64):
   provisioningFor "nim":
     developInterface
     contributor "libvterm-owning-nim-zlib-sdk"
     nixPackage "libvterm-owning-nim-zlib-sdk", expressionFile = "libvterm_nim_zlib_sdk.nix", executablePath = "bin/nim", lockIdentity = sdkIdentity
+
+when defined(linux) or defined(macosx):
 
   when defined(macosx):
     provisioningFor "clang":
