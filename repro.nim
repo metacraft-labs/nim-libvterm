@@ -84,7 +84,12 @@
 import repro_project_dsl
 import std/[os, json]
 when defined(linux) or defined(macosx):
-  import repro_dsl_stdlib/packages/nim as canonicalNim
+  # Canonical nim is NOT imported on linux-arm64: there the SDK's nim is the one
+  # contributor (libvterm_sdk_contribution), so a consumer that resolves nim sees
+  # one contributor, not two. Every other platform keeps canonical nim and gets no
+  # SDK nim (see libvterm_sdk_contribution.nim).
+  when not (defined(linux) and defined(arm64)):
+    import repro_dsl_stdlib/packages/nim as canonicalNim
   when defined(macosx):
     import repro_dsl_stdlib/packages/clang as canonicalBackend
   else:
@@ -195,6 +200,8 @@ const libvtermTestSpecs: seq[LibvtermTestSpec] = @[
     binary: "build/test-bin/test_sgr_extended_underline"),
   LibvtermTestSpec(source: "tests/test_sgr_underline_color.nim",
     binary: "build/test-bin/test_sgr_underline_color"),
+  LibvtermTestSpec(source: "tests/test_one_nim_contributor_per_platform.nim",
+    binary: "build/test-bin/test_one_nim_contributor_per_platform"),
   LibvtermTestSpec(source: "tests/test_api_invariants.nim",
     binary: "build/test-bin/test_api_invariants"),
   # ``test_no_leaks.nim`` — portable; its ``when defined(linux):`` arms
