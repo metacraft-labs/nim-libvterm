@@ -175,13 +175,16 @@ type
     focusReportEnabled: bool
     mouseProtocolNum: int
 
-    pendingUtf8: seq[byte]
-      ## An INCOMPLETE multi-byte UTF-8 sequence at the end of the last `feed`,
+    pending: seq[byte]
+      ## An INCOMPLETE sequence at the end of the last `feed` -- a multi-byte
+      ## UTF-8 character or a control sequence without its final byte --
       ## held back until the bytes that finish it arrive. See `utf8HoldBack`
-      ## below for the defect this exists to avoid; the short version is that
-      ## libvterm keeps SEVERAL UTF-8 decoder instances and chooses between them
-      ## per text run, so a sequence split across two `vterm_input_write` calls
-      ## can be decoded by two different ones and lost by both.
+      ## and `csiHoldBack` below for the defects this exists to avoid; the
+      ## short version is that libvterm keeps SEVERAL UTF-8 decoder instances
+      ## and chooses between them per text run, so a character split across
+      ## two `vterm_input_write` calls can be decoded by two different ones
+      ## and lost by both, and that `feedChunk` reads the SGRs libvterm
+      ## cannot represent (the underline colour) only from a whole CSI.
 
   Screen* = object
     ## Owning handle for one libvterm instance + extended state.
@@ -633,43 +636,106 @@ proc utf8HoldBack*(bytes: openArray[byte]): int =
   let have = trailing + 1
   if have < need: have else: 0
 
+const MaxHeldCsi* = 256
+  ## The longest incomplete CSI `csiHoldBack` keeps back. A real control
+  ## sequence is far shorter (the longest isonim-tui emits, a truecolor
+  ## foreground and background with attributes, is under 60 bytes); a run of
+  ## parameter bytes longer than this is malformed, and is passed through for
+  ## libvterm to report rather than hoarded until a final byte that may never
+  ## come.
+
+proc csiHoldBack*(bytes: openArray[byte]): int =
+  ## How many bytes at the END of `bytes` are the start of a control sequence
+  ## whose final byte has not arrived yet: a lone `ESC`, or `ESC [` followed
+  ## only by parameter (0x30-0x3F) and intermediate (0x20-0x2F) bytes
+  ## (ECMA-48 §5.4: https://ecma-international.org/publications-and-standards/standards/ecma-48/).
+  ## 0 when the buffer does not end inside one.
+  ##
+  ## WHY THIS EXISTS. libvterm has no underline colour (CSI 58 / 59) and no
+  ## dotted or dashed underline (CSI 4:4 / 4:5), so `feedChunk` reads every
+  ## SGR itself, hands it to the overlay's pen (`handleCsi`) and stamps the
+  ## cells of each text run with that pen. It can only read a CSI that is
+  ## whole in the buffer it is given. A CSI split between two `feed` calls
+  ## was fed to libvterm in two halves -- which libvterm joins, so its own
+  ## attributes were right -- but the walker saw neither half as a CSI: the
+  ## first ended the buffer unfinished, the second began without `ESC [`.
+  ## The overlay's pen kept its old value, and every cell drawn after the
+  ## lost 58 (or 59) carried the wrong underline colour up to the next SGR.
+  ## Non-SGR sequences the overlay reads (DEC private modes, the kitty
+  ## keyboard's `CSI = u`) were lost the same way.
+  ##
+  ## A pty reader splits sequences wherever a read ends (TermAssert's `pump`
+  ## reads up to 4096 bytes), which is a scheduling accident: CodeTracer's
+  ## terminal snapshots showed an underline colour that came and went between
+  ## runs on a loaded host. `tests/test_sgr_split_across_feeds.nim` splits
+  ## streams at every byte offset and pins each to the one-write screen.
+  ##
+  ## The remedy is the same as `utf8HoldBack`'s: `feed` keeps the unfinished
+  ## sequence and prepends it to the next call, so the walker always sees a
+  ## CSI whole.
+  if bytes.len == 0: return 0
+  # The last ESC, no further back than a held CSI may reach.
+  let floor = max(0, bytes.len - MaxHeldCsi)
+  var esc = bytes.len - 1
+  while esc >= floor and bytes[esc] != 0x1B'u8:
+    dec esc
+  if esc < floor: return 0
+  if esc == bytes.len - 1: return 1             # a lone ESC: CSI, or not, next
+  if bytes[esc + 1] != 0x5B'u8: return 0        # not `ESC [`: libvterm's alone
+  for i in esc + 2 ..< bytes.len:
+    let b = bytes[i]
+    if b < 0x20'u8 or b > 0x3F'u8:
+      # A final byte (or a C0 control libvterm acts on inside the sequence):
+      # the CSI is complete, or not a CSI the walker reads.
+      return 0
+  bytes.len - esc
+
 proc feedChunk(s: var Screen; bytes: openArray[byte])
+
+proc heldBack(bytes: openArray[byte]): int {.inline.} =
+  ## The incomplete tail `feed` keeps for the next call: an unfinished UTF-8
+  ## character or an unfinished control sequence. At most one of them is
+  ## non-zero -- a CSI's bytes are all ASCII, and an unfinished UTF-8
+  ## character is never inside one.
+  max(utf8HoldBack(bytes), csiHoldBack(bytes))
 
 proc feed*(s: var Screen; bytes: openArray[byte]) =
   ## Feed UTF-8 / ANSI bytes from the child process into the parser.
   ##
-  ## An incomplete multi-byte UTF-8 sequence at the end of `bytes` is HELD BACK
-  ## and prepended to the next call -- see `utf8HoldBack` for the defect that
-  ## requires it. Callers that read a pty in fixed-size chunks (TermAssert's
-  ## `pump` reads 4096 at a time) split sequences routinely, and before this
-  ## the split silently produced U+FFFD.
+  ## An incomplete sequence at the end of `bytes` is HELD BACK and prepended
+  ## to the next call: a multi-byte UTF-8 character (`utf8HoldBack`; before
+  ## it, the split silently produced U+FFFD) and a control sequence still
+  ## waiting for its final byte (`csiHoldBack`; before it, a split SGR 58 /
+  ## 59 never reached the underline-colour overlay). Callers that read a pty
+  ## in fixed-size chunks (TermAssert's `pump` reads 4096 at a time) split
+  ## both routinely.
   if s.inner == nil: return
   let inner = addr s.inner[]
-  if inner.pendingUtf8.len == 0 and bytes.len == 0: return
-  if inner.pendingUtf8.len == 0:
-    let hold = utf8HoldBack(bytes)
+  if inner.pending.len == 0 and bytes.len == 0: return
+  if inner.pending.len == 0:
+    let hold = heldBack(bytes)
     if hold == 0:
       feedChunk(s, bytes)
       return
     if hold < bytes.len:
       feedChunk(s, bytes.toOpenArray(0, bytes.len - hold - 1))
-    inner.pendingUtf8 = @[]
+    inner.pending = @[]
     for i in bytes.len - hold ..< bytes.len:
-      inner.pendingUtf8.add bytes[i]
+      inner.pending.add bytes[i]
     return
-  var buf = inner.pendingUtf8
-  inner.pendingUtf8 = @[]
+  var buf = inner.pending
+  inner.pending = @[]
   for b in bytes: buf.add b
-  let hold = utf8HoldBack(buf)
+  let hold = heldBack(buf)
   if hold > 0:
     for i in buf.len - hold ..< buf.len:
-      inner.pendingUtf8.add buf[i]
+      inner.pending.add buf[i]
     buf.setLen(buf.len - hold)
   if buf.len > 0:
     feedChunk(s, buf)
 
 proc feedChunk(s: var Screen; bytes: openArray[byte]) =
-  ## `feed` minus the UTF-8 hold-back.
+  ## `feed` minus the hold-back of an incomplete trailing sequence.
   ##
   ## The byte stream is walked in chunks delimited by SGR sequences. For
   ## each chunk we record libvterm's cursor before and after, then stamp
@@ -697,6 +763,9 @@ proc feedChunk(s: var Screen; bytes: openArray[byte]) =
       inc i
       continue
     let p = parseOneCsi(bytes, i)
+    # Incomplete: `feed` holds an unfinished CSI back (`csiHoldBack`), so
+    # one reaches here only when it is malformed past that bound; libvterm
+    # gets the rest raw and reports it.
     if not p.ok: break
     # We split the stream at every CSI we care about. SGR (`m`) updates
     # the pen; other CSIs go to the extended-state handler unchanged.

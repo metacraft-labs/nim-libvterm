@@ -215,6 +215,8 @@ const libvtermTestSpecs: seq[LibvtermTestSpec] = @[
     binary: "build/test-bin/test_nimcache_is_worktree_local"),
   LibvtermTestSpec(source: "tests/test_utf8_split_across_feeds.nim",
     binary: "build/test-bin/test_utf8_split_across_feeds"),
+  LibvtermTestSpec(source: "tests/test_sgr_split_across_feeds.nim",
+    binary: "build/test-bin/test_sgr_split_across_feeds"),
   LibvtermTestSpec(source: "tests/test_wide_glyph_continuation_cell.nim",
     binary: "build/test-bin/test_wide_glyph_continuation_cell"),
 ]
