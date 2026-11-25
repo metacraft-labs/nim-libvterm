@@ -136,6 +136,11 @@ jobs:
         shell: bash
         run: nix develop . --no-update-lock-file --command python3 tests/test_native_arm_runquota_policy.py --reprobuild .reprobuild-src --runquota runquota
 
+      - name: Verify the native ARM64 leg asks setup-dev-env for a clean job environment
+        if: matrix.os == 'linux'
+        shell: bash
+        run: python3 tests/test_native_arm_job_env.py
+
       - name: Provision the owning native Windows x64 SDK
         if: runner.os == 'Windows' && matrix.arch == 'x64'
         shell: pwsh

@@ -246,3 +246,10 @@ test-ci-engine-lock:
 # and network access for the nim-shm-lease fetch.
 test-native-arm-runquota-policy:
     python3 tests/test_native_arm_runquota_policy.py
+
+# Check that the Windows ARM64 leg asks setup-dev-env for no job-scoped Git
+# credential and no exported build environment, and that the pinned
+# setup-dev-env revision has both inputs. Needs an adjacent
+# metacraft-github-actions Git checkout.
+test-native-arm-job-env:
+    python3 tests/test_native_arm_job_env.py --actions ../metacraft-github-actions
