@@ -93,12 +93,12 @@ jobs:
           WINDOWS_DIY_ARCH_OVERRIDE: ${{ runner.os == 'Windows' && runner.arch == 'ARM64' && 'x64' || '' }}
         with:
           env-flavor: reprobuild
-          # The Reprobuild engine is the fleet pin: the `reprobuild` input of
-          # nixos-modules' (metacraft-labs/devops-modules) flake.lock. Every leg builds that revision from
-          # source (Windows ARM64 as x64 under emulation), so CI runs the
+          # The Reprobuild engine is the fleet pin: `pins/reprobuild.json` in
+          # metacraft-labs/metacraft-github-actions. Every leg builds that revision
+          # from source (Windows ARM64 as x64 under emulation), so CI runs the
           # engine the fleet runs; a release install would not. The companion
           # pins are that revision's own flake.lock entries. These literals
-          # follow nixos-modules and are replaced when the pin moves into infra.
+          # follow that pin file and move with it.
           # tests/test_ci_engine_reads_committed_lock.py checks that both
           # workflows build this engine, that it reads the committed v3 lock, and
           # that the companion pins match it.
@@ -106,10 +106,10 @@ jobs:
           # -EngineRevision; tests/test_native_arm_runquota_policy.py checks
           # that, and derives the runquota and nim-shm-lease revisions from it.
           repro-from-source: "true"
-          repro-build-pin: 84b459adda91535f0b89424dfc95aa34bfa67a32
-          repro-runquota-pin: f9e1a4d3f3ba7840aefe56883127653af9c5a608
-          repro-io-mon-pin: 35829647d603b481276d2632b39ec2a9ce3625b2
-          repro-stackable-hooks-pin: c1d55ce33fb2a29e4cf8d8bdbe1713f355370d0a
+          repro-build-pin: d1bf1f065aca01b90c3bbdddc57d14e977f49e1a
+          repro-runquota-pin: 6ff973131e7f715f0237cb0f08b8dd16cbeba0dc
+          repro-io-mon-pin: b1c32599f9cd671b150f68de2b21bdc9ae0c42be
+          repro-stackable-hooks-pin: c34e3252d413361a0f250d8921e00c119d30e114
           gh-token: ${{ steps.ci_token.outputs.token }}
           app-id: ${{ secrets.CI_TOKEN_PROVIDER_APP_ID }}
           app-private-key: ${{ secrets.CI_TOKEN_PROVIDER_PRIVATE_KEY }}
@@ -139,7 +139,7 @@ jobs:
         if: runner.os != 'Windows'
         run: |
           set -euo pipefail
-          test "$(git -C .reprobuild-src rev-parse HEAD)" = 84b459adda91535f0b89424dfc95aa34bfa67a32
+          test "$(git -C .reprobuild-src rev-parse HEAD)" = d1bf1f065aca01b90c3bbdddc57d14e977f49e1a
           test -z "$(git -C .reprobuild-src status --porcelain)"
           test "$(command -v repro)" = "$GITHUB_WORKSPACE/.reprobuild-src/build/bin/repro"
           test "${REPROBUILD_NIX_DAEMON_BIN:?missing staged helper}" = "$GITHUB_WORKSPACE/.reprobuild-src/build/bin/reprobuild-nix-daemon"
@@ -193,7 +193,7 @@ jobs:
         shell: pwsh
         working-directory: ${{ runner.os == 'Windows' && matrix.arch == 'arm64' && 'native-owning-source' || '.' }}
         run: |
-          ./ci/windows-native-arm-sdk.ps1 -OwnedPathHelper ./ci/native-python-owned-path.ps1 -SourceRoot "$env:GITHUB_WORKSPACE/native-owning-source" -SourceRevision '${{ github.sha }}' -EngineRevision '84b459adda91535f0b89424dfc95aa34bfa67a32' -FailureEvidenceDirectory "$env:GITHUB_WORKSPACE/native-arm-sdk-failure-evidence" -VerifyNativeRunquotaControls
+          ./ci/windows-native-arm-sdk.ps1 -OwnedPathHelper ./ci/native-python-owned-path.ps1 -SourceRoot "$env:GITHUB_WORKSPACE/native-owning-source" -SourceRevision '${{ github.sha }}' -EngineRevision 'd1bf1f065aca01b90c3bbdddc57d14e977f49e1a' -FailureEvidenceDirectory "$env:GITHUB_WORKSPACE/native-arm-sdk-failure-evidence" -VerifyNativeRunquotaControls
 
       - name: Record native Windows executable provenance
         if: runner.os == 'Windows'

@@ -66,7 +66,7 @@ try {
     # set to 134217728 hashes to exactly that). These two exact identities are
     # the whole review; there is no pattern. The review binds to the engine
     # source revision below, so a new engine pin is a deliberate re-review.
-    $reviewedEngine = '84b459adda91535f0b89424dfc95aa34bfa67a32'
+    $reviewedEngine = 'd1bf1f065aca01b90c3bbdddc57d14e977f49e1a'
     $engineHead = (& git -C (Join-Path $root '.reprobuild-src') rev-parse HEAD).Trim()
     if ($LASTEXITCODE -ne 0 -or $engineHead -ne $reviewedEngine) { throw "The reviewed native Nim identity covers reprobuild $reviewedEngine, not '$engineHead'; re-review the Nim the new engine provisions." }
     if ([string]::IsNullOrEmpty($env:LOCALAPPDATA)) { throw 'LOCALAPPDATA is unset; cannot locate the engine-provisioned Nim.' }
