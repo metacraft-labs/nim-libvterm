@@ -84,12 +84,10 @@
 import repro_project_dsl
 import std/[os, json]
 when defined(linux) or defined(macosx):
-  # Canonical nim is NOT imported on linux-arm64: there the SDK's nim is the one
-  # contributor (libvterm_sdk_contribution), so a consumer that resolves nim sees
-  # one contributor, not two. Every other platform keeps canonical nim and gets no
-  # SDK nim (see libvterm_sdk_contribution.nim).
-  when not (defined(linux) and defined(arm64)):
-    import repro_dsl_stdlib/packages/nim as canonicalNim
+  # Canonical nim is the one nim contributor on every platform:
+  # libvterm_sdk_contribution contributes the compiler and bash, never nim
+  # (see that file for why a platform carve-out cannot work for consumers).
+  import repro_dsl_stdlib/packages/nim as canonicalNim
   when defined(macosx):
     import repro_dsl_stdlib/packages/clang as canonicalBackend
   else:
@@ -320,6 +318,14 @@ package nim_libvterm:
           (when defined(arm64): @["ci/windows-native-arm-sdk.ps1", "ci/native-python-owned-path.ps1"]
            else: @[".github/scripts/windows-native-compiler-sdk.ps1"])
       else: newSeq[string]()
+      # The contributor test `staticRead`s the recipe sources it checks, so
+      # they are inputs of its compile on every platform (the Unix sdkInputs
+      # already carry libvterm_sdk_contribution.nim).
+      var recipeSourceInputs: seq[string] = @[]
+      if source == "tests/test_one_nim_contributor_per_platform.nim":
+        for path in ["repro.nim", "libvterm_sdk_contribution.nim"]:
+          if path notin sdkInputs:
+            recipeSourceInputs.add path
       let zlibPassC = when defined(windows):
         @["-Ibuild/windows-zlib-sdk/include"] &
           (when defined(arm64): @["--target=aarch64-w64-mingw32"] else: @[])
@@ -334,7 +340,8 @@ package nim_libvterm:
         defines = @["release"],
         paths = @["src", "tests"],
         extraInputs = @["src", "tests", "vendor/libvterm", "config.nims",
-                        "nim_libvterm.nimble"] & sdkInputs & nativeArmInputs,
+                        "nim_libvterm.nimble"] & sdkInputs & nativeArmInputs &
+                      recipeSourceInputs,
         mm = "orc",
         extraPassC = @["-w"] & zlibPassC,
         extraPassL = zlibPassL,

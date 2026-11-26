@@ -5,15 +5,13 @@ import repro_project_dsl
 const sdkSourceBytes = staticRead("libvterm_nim_zlib_sdk.nix") & "\0" & staticRead("flake.lock")
 let sdkIdentity = "blake3:" & blake3.toHex(blake3.digest(sdkSourceBytes))
 # Unix contributions bind the owning SDK; native Darwin qualification remains required.
-# nim is the SDK's only on linux-arm64, where the SDK's Nim (from nim-fork) and
-# zlib-from-source are the intended realization. Elsewhere canonical nim is the
-# one nim contributor, so no consumer resolves two (see repro.nim).
-when defined(linux) and defined(arm64):
-  provisioningFor "nim":
-    developInterface
-    contributor "libvterm-owning-nim-zlib-sdk"
-    nixPackage "libvterm-owning-nim-zlib-sdk", expressionFile = "libvterm_nim_zlib_sdk.nix", executablePath = "bin/nim", lockIdentity = sdkIdentity
-
+# The SDK contributes the C compiler (which sees zlib) and bash, but no nim: its
+# nim is nixpkgs' nim wrapped to name that compiler, and a second nim
+# contributor beside the canonical package is ambiguous: Reprobuild gives
+# neither one priority and refuses to choose. The contributions reach
+# every consumer that `uses: "nim-libvterm"`, and the consumer's own
+# `uses: "nim"` brings canonical nim, so leaving canonical nim out of this
+# recipe on some platform cannot make that platform's consumers unambiguous.
 when defined(linux) or defined(macosx):
 
   when defined(macosx):
