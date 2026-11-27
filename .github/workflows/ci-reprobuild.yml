@@ -88,28 +88,21 @@ jobs:
       - name: Setup dev env (reprobuild flavor)
         id: source_setup
         # Source mode supplies the verified CLI and staged Nix helper.
-        uses: metacraft-labs/metacraft-github-actions/setup-dev-env@34aee803995db8b59306789d4ef924693ce431d6
+        uses: metacraft-labs/metacraft-github-actions/setup-dev-env@dev
         env:
           WINDOWS_DIY_ARCH_OVERRIDE: ${{ runner.os == 'Windows' && runner.arch == 'ARM64' && 'x64' || '' }}
         with:
           env-flavor: reprobuild
-          # The Reprobuild engine is the fleet pin: `pins/reprobuild.json` in
-          # metacraft-labs/metacraft-github-actions. Every leg builds that revision
-          # from source (Windows ARM64 as x64 under emulation), so CI runs the
-          # engine the fleet runs; a release install would not. The companion
-          # pins are that revision's own flake.lock entries. These literals
-          # follow that pin file and move with it.
-          # tests/test_ci_engine_reads_committed_lock.py checks that both
-          # workflows build this engine, that it reads the committed v3 lock, and
-          # that the companion pins match it.
-          # The native Windows ARM64 SDK step passes the same revision as
-          # -EngineRevision; tests/test_native_arm_runquota_policy.py checks
-          # that, and derives the runquota and nim-shm-lease revisions from it.
-          repro-from-source: "true"
-          repro-build-pin: d1bf1f065aca01b90c3bbdddc57d14e977f49e1a
-          repro-runquota-pin: 6ff973131e7f715f0237cb0f08b8dd16cbeba0dc
-          repro-io-mon-pin: b1c32599f9cd671b150f68de2b21bdc9ae0c42be
-          repro-stackable-hooks-pin: c34e3252d413361a0f250d8921e00c119d30e114
+          # The Reprobuild engine is the fleet pin, the action's default:
+          # `pins/reprobuild.json` in metacraft-labs/metacraft-github-actions,
+          # built against the bootstrap libraries that pinned revision locks
+          # (Windows ARM64 as x64 under emulation), so CI runs the engine the
+          # fleet runs. tests/test_ci_engine_reads_committed_lock.py checks that
+          # this engine reads the committed v3 lock and refuses an override in
+          # either workflow. The native Windows ARM64 SDK step passes the
+          # engine setup-dev-env reports as -EngineRevision;
+          # tests/test_native_arm_runquota_policy.py checks that, and derives
+          # the runquota and nim-shm-lease revisions from it.
           gh-token: ${{ steps.ci_token.outputs.token }}
           app-id: ${{ secrets.CI_TOKEN_PROVIDER_APP_ID }}
           app-private-key: ${{ secrets.CI_TOKEN_PROVIDER_PRIVATE_KEY }}
@@ -136,27 +129,73 @@ jobs:
           include-hidden-files: true
 
       - name: Assert measured Unix Repro artifacts
+        # setup-dev-env reports the engine it installed. It is the pin, not an
+        # override, and a source build is a clean checkout of that commit whose
+        # binary and staged Nix helper are the ones on PATH. A Linux
+        # binary-cache hit installs the pinned commit's Nix package instead.
         if: runner.os != 'Windows'
+        env:
+          REPRO_COMMIT: ${{ steps.source_setup.outputs.repro-commit }}
+          REPRO_ORIGIN: ${{ steps.source_setup.outputs.repro-origin }}
+          REPRO_INSTALL_SOURCE: ${{ steps.source_setup.outputs.repro-install-source }}
         run: |
           set -euo pipefail
-          test "$(git -C .reprobuild-src rev-parse HEAD)" = d1bf1f065aca01b90c3bbdddc57d14e977f49e1a
-          test -z "$(git -C .reprobuild-src status --porcelain)"
-          test "$(command -v repro)" = "$GITHUB_WORKSPACE/.reprobuild-src/build/bin/repro"
-          test "${REPROBUILD_NIX_DAEMON_BIN:?missing staged helper}" = "$GITHUB_WORKSPACE/.reprobuild-src/build/bin/reprobuild-nix-daemon"
-          test -x "$REPROBUILD_NIX_DAEMON_BIN"
+          echo "repro ${REPRO_COMMIT} (origin ${REPRO_ORIGIN}, ${REPRO_INSTALL_SOURCE})"
+          [[ "${REPRO_COMMIT}" =~ ^[0-9a-f]{40}$ ]]
+          test "${REPRO_ORIGIN}" = pin
+          if [ "${REPRO_INSTALL_SOURCE}" = source ]; then
+            test "$(git -C .reprobuild-src rev-parse HEAD)" = "${REPRO_COMMIT}"
+            test -z "$(git -C .reprobuild-src status --porcelain)"
+            test "$(command -v repro)" = "$GITHUB_WORKSPACE/.reprobuild-src/build/bin/repro"
+            test "${REPROBUILD_NIX_DAEMON_BIN:?missing staged helper}" = "$GITHUB_WORKSPACE/.reprobuild-src/build/bin/reprobuild-nix-daemon"
+          fi
+          test -x "${REPROBUILD_NIX_DAEMON_BIN:?missing staged helper}"
           "$REPROBUILD_NIX_DAEMON_BIN" --help
-          printf 'source=%s cli=%s helper=%s\n' "$(git -C .reprobuild-src rev-parse HEAD)" "$(command -v repro)" "$REPROBUILD_NIX_DAEMON_BIN"
+          printf 'source=%s cli=%s helper=%s\n' "${REPRO_COMMIT}" "$(command -v repro)" "$REPROBUILD_NIX_DAEMON_BIN"
           repro --version
+
+      - name: Provide the engine and runquota sources
+        # The lock reader and the native ARM64 derivation read the engine's own
+        # source revision and the runquota revision its flake.lock pins. A
+        # source build left both checkouts (.reprobuild-src, runquota); a
+        # binary-cache install did not, so fetch those two commits.
+        id: engine_sources
+        if: matrix.os == 'linux'
+        shell: bash
+        env:
+          REPRO_COMMIT: ${{ steps.source_setup.outputs.repro-commit }}
+          REPRO_INSTALL_SOURCE: ${{ steps.source_setup.outputs.repro-install-source }}
+        run: |
+          set -euo pipefail
+          if [ "${REPRO_INSTALL_SOURCE}" = source ]; then
+            printf 'reprobuild=%s\nrunquota=%s\n' .reprobuild-src runquota >> "$GITHUB_OUTPUT"
+            exit 0
+          fi
+          engine="${RUNNER_TEMP}/reprobuild-engine-source"
+          git init -q "$engine"
+          git -C "$engine" fetch -q --depth 1 https://github.com/metacraft-labs/reprobuild.git "${REPRO_COMMIT}"
+          runquota_rev="$(git -C "$engine" show "${REPRO_COMMIT}:flake.lock" | python3 -c 'import json,sys; x=json.load(sys.stdin); print(x["nodes"][x["nodes"][x["root"]]["inputs"]["runquota-src"]]["locked"]["rev"])')"
+          runquota="${RUNNER_TEMP}/runquota-source"
+          git init -q "$runquota"
+          git -C "$runquota" fetch -q --depth 1 https://github.com/metacraft-labs/runquota.git "$runquota_rev"
+          printf 'reprobuild=%s\nrunquota=%s\n' "$engine" "$runquota" >> "$GITHUB_OUTPUT"
 
       - name: Verify CI engine reads the committed lock
         if: matrix.os == 'linux'
         shell: bash
-        run: nix develop . --no-update-lock-file --command python3 tests/test_ci_engine_reads_committed_lock.py --reprobuild .reprobuild-src
+        env:
+          REPRO_COMMIT: ${{ steps.source_setup.outputs.repro-commit }}
+          ENGINE_SOURCE: ${{ steps.engine_sources.outputs.reprobuild }}
+        run: nix develop . --no-update-lock-file --command python3 tests/test_ci_engine_reads_committed_lock.py --reprobuild "$ENGINE_SOURCE" --revision "$REPRO_COMMIT"
 
       - name: Verify the native ARM64 runquota inputs derive from the engine pin
         if: matrix.os == 'linux'
         shell: bash
-        run: nix develop . --no-update-lock-file --command python3 tests/test_native_arm_runquota_policy.py --reprobuild .reprobuild-src --runquota runquota
+        env:
+          REPRO_COMMIT: ${{ steps.source_setup.outputs.repro-commit }}
+          ENGINE_SOURCE: ${{ steps.engine_sources.outputs.reprobuild }}
+          RUNQUOTA_SOURCE: ${{ steps.engine_sources.outputs.runquota }}
+        run: nix develop . --no-update-lock-file --command python3 tests/test_native_arm_runquota_policy.py --reprobuild "$ENGINE_SOURCE" --runquota "$RUNQUOTA_SOURCE" --revision "$REPRO_COMMIT"
 
       - name: Verify the native ARM64 leg asks setup-dev-env for a clean job environment
         if: matrix.os == 'linux'
@@ -166,6 +205,9 @@ jobs:
       - name: Provision the owning native Windows x64 SDK
         if: runner.os == 'Windows' && matrix.arch == 'x64'
         shell: pwsh
+        env:
+          REPRO_COMMIT: ${{ steps.source_setup.outputs.repro-commit }}
+          REPRO_ORIGIN: ${{ steps.source_setup.outputs.repro-origin }}
         run: ./.github/scripts/windows-native-compiler-sdk.ps1
 
       - name: Authenticate owning checkout Git runtime configuration
@@ -192,8 +234,10 @@ jobs:
         if: runner.os == 'Windows' && matrix.arch == 'arm64'
         shell: pwsh
         working-directory: ${{ runner.os == 'Windows' && matrix.arch == 'arm64' && 'native-owning-source' || '.' }}
+        env:
+          REPRO_COMMIT: ${{ steps.source_setup.outputs.repro-commit }}
         run: |
-          ./ci/windows-native-arm-sdk.ps1 -OwnedPathHelper ./ci/native-python-owned-path.ps1 -SourceRoot "$env:GITHUB_WORKSPACE/native-owning-source" -SourceRevision '${{ github.sha }}' -EngineRevision 'd1bf1f065aca01b90c3bbdddc57d14e977f49e1a' -FailureEvidenceDirectory "$env:GITHUB_WORKSPACE/native-arm-sdk-failure-evidence" -VerifyNativeRunquotaControls
+          ./ci/windows-native-arm-sdk.ps1 -OwnedPathHelper ./ci/native-python-owned-path.ps1 -SourceRoot "$env:GITHUB_WORKSPACE/native-owning-source" -SourceRevision '${{ github.sha }}' -EngineRevision "$env:REPRO_COMMIT" -FailureEvidenceDirectory "$env:GITHUB_WORKSPACE/native-arm-sdk-failure-evidence" -VerifyNativeRunquotaControls
 
       - name: Record native Windows executable provenance
         if: runner.os == 'Windows'
@@ -203,7 +247,7 @@ jobs:
 
       - name: Refresh authentication before repro build
         if: runner.os != 'Windows'
-        uses: metacraft-labs/metacraft-github-actions/refresh-build-auth@bcd29c631ff01fbd0e577c5f96e5f9d5211fed26
+        uses: metacraft-labs/metacraft-github-actions/refresh-build-auth@dev
         with:
           app-id: ${{ secrets.CI_TOKEN_PROVIDER_APP_ID || vars.CI_TOKEN_PROVIDER_APP_ID }}
           private-key: ${{ secrets.CI_TOKEN_PROVIDER_PRIVATE_KEY }}
@@ -216,7 +260,7 @@ jobs:
 
       - name: Refresh authentication before repro test
         if: runner.os != 'Windows'
-        uses: metacraft-labs/metacraft-github-actions/refresh-build-auth@bcd29c631ff01fbd0e577c5f96e5f9d5211fed26
+        uses: metacraft-labs/metacraft-github-actions/refresh-build-auth@dev
         with:
           app-id: ${{ secrets.CI_TOKEN_PROVIDER_APP_ID || vars.CI_TOKEN_PROVIDER_APP_ID }}
           private-key: ${{ secrets.CI_TOKEN_PROVIDER_PRIVATE_KEY }}
@@ -231,11 +275,14 @@ jobs:
         if: runner.os == 'Windows' && runner.arch == 'X64'
         shell: pwsh
         working-directory: ${{ runner.os == 'Windows' && matrix.arch == 'arm64' && 'native-owning-source' || '.' }}
+        env:
+          REPRO_COMMIT: ${{ steps.source_setup.outputs.repro-commit }}
+          REPRO_ORIGIN: ${{ steps.source_setup.outputs.repro-origin }}
         run: ./.github/scripts/bind-selected-native-nim.ps1
 
       - name: Refresh authentication before just build
         if: runner.os != 'Windows'
-        uses: metacraft-labs/metacraft-github-actions/refresh-build-auth@bcd29c631ff01fbd0e577c5f96e5f9d5211fed26
+        uses: metacraft-labs/metacraft-github-actions/refresh-build-auth@dev
         with:
           app-id: ${{ secrets.CI_TOKEN_PROVIDER_APP_ID || vars.CI_TOKEN_PROVIDER_APP_ID }}
           private-key: ${{ secrets.CI_TOKEN_PROVIDER_PRIVATE_KEY }}
@@ -250,7 +297,7 @@ jobs:
 
       - name: Refresh authentication before just test
         if: runner.os != 'Windows'
-        uses: metacraft-labs/metacraft-github-actions/refresh-build-auth@bcd29c631ff01fbd0e577c5f96e5f9d5211fed26
+        uses: metacraft-labs/metacraft-github-actions/refresh-build-auth@dev
         with:
           app-id: ${{ secrets.CI_TOKEN_PROVIDER_APP_ID || vars.CI_TOKEN_PROVIDER_APP_ID }}
           private-key: ${{ secrets.CI_TOKEN_PROVIDER_PRIVATE_KEY }}

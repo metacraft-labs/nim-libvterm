@@ -2,9 +2,12 @@
 """Check the native Windows ARM64 runquota policy and its derivation.
 
 The Windows ARM64 leg builds a native runquotad from source. Its inputs are
-bound through a chain that starts at the engine revision the workflows pin:
+bound through a chain that starts at the engine revision CI runs, the fleet
+Reprobuild pin (`pins/reprobuild.json` in metacraft-labs/metacraft-github-actions)
+that setup-dev-env installs and reports as `repro-commit`:
 
-* the workflows pass that revision to ci/windows-native-arm-sdk.ps1;
+* the workflows pass that output to ci/windows-native-arm-sdk.ps1 as
+  -EngineRevision "$env:REPRO_COMMIT";
 * the engine's flake.lock at that revision names the runquota revision;
 * runquota's flake.lock at that revision names the nim-shm-lease revision;
 * source bytes are read from Git at those revisions and checked against
@@ -13,9 +16,12 @@ bound through a chain that starts at the engine revision the workflows pin:
 So the committed policy must not name any revision or content hash: a pin
 move would otherwise leave it stale. This test checks the policy shape, the
 SHA-256 pins that chain ci/windows-native-arm-sdk.ps1 to the helper, its
-controls and the policy, that every workflow passes its own engine pin, and
-it runs the real PowerShell derivation (the functions the ARM64 leg calls)
-against sibling Git checkouts of reprobuild and runquota. The nim-shm-lease
+controls and the policy, that every workflow passes setup-dev-env's engine and
+names none of its own, and it runs the real PowerShell derivation (the
+functions the ARM64 leg calls) against Git checkouts of reprobuild and
+runquota. The engine revision is `--revision` (CI passes `repro-commit`), or
+else the `rev` of `--pin` (default: the sibling metacraft-github-actions
+checkout's pins/reprobuild.json). The nim-shm-lease
 export fetches the derived revision from GitHub, as the ARM64 leg does.
 
 Needs pwsh, git and network access; run in the dev shell.
@@ -36,6 +42,12 @@ CONTROLS = CI / 'native-arm-runquota-controls.ps1'
 OWNED_PATH = CI / 'native-python-owned-path.ps1'
 POLICY = CI / 'native-arm-runquota-policy.json'
 HEX40 = re.compile(r'\b[0-9a-f]{40}\b')
+FULL_SHA = re.compile(r'[0-9a-f]{40}')
+# Workflow inputs that would replace the pinned engine or the sibling
+# revisions it is built against.
+OVERRIDES = ('repro-version', 'repro-build-pin', 'repro-runquota-pin',
+             'repro-io-mon-pin', 'repro-stackable-hooks-pin', 'repro-posix-io-mon-pin')
+ENGINE_ARGUMENT = '-EngineRevision "$env:REPRO_COMMIT"'
 HEX64 = re.compile(r'\b[0-9a-f]{64}\b')
 
 
@@ -76,24 +88,26 @@ def check_hash_chain():
         f'{HELPER.name} pins {sorted(policy_pins)}, {POLICY.name} is {sha256(POLICY)}')
 
 
-def workflow_pins():
-    rows = {}
+def check_workflows():
+    """Every workflow that runs the native ARM64 SDK hands it setup-dev-env's engine."""
+    checked = []
     for path in sorted((ROOT / '.github/workflows').glob('*.yml')):
         text = path.read_text()
         if 'windows-native-arm-sdk.ps1' not in text:
             continue
-        build = re.search(r'^\s+repro-build-pin:\s*([0-9a-f]{40})\s*$', text, re.M)
-        runquota = re.search(r'^\s+repro-runquota-pin:\s*([0-9a-f]{40})\s*$', text, re.M)
-        assert build and runquota, f'{path.name} must pin its engine and runquota revisions'
-        invocations = re.findall(r'windows-native-arm-sdk\.ps1\b[^\n]*', text)
-        for invocation in invocations:
-            engine = re.search(r"-EngineRevision '([0-9a-f]{40})'", invocation)
-            assert engine, f'{path.name}: the native ARM64 SDK step must pass -EngineRevision'
-            assert engine.group(1) == build.group(1), (
-                f'{path.name}: -EngineRevision {engine.group(1)} differs from repro-build-pin {build.group(1)}')
-        rows[path.name] = (build.group(1), runquota.group(1))
-    assert rows, 'no workflow runs the native ARM64 SDK'
-    return rows
+        for setting in OVERRIDES:
+            assert not re.search(r'^\s+' + setting + r':', text, re.M), (
+                f'{path.name} overrides the pinned engine with {setting}')
+        assert re.search(r'^\s+REPRO_COMMIT:\s*\$\{\{\s*steps\.[\w-]+\.outputs\.repro-commit\s*\}\}\s*$',
+                         text, re.M), f'{path.name} must pass setup-dev-env\'s repro-commit as REPRO_COMMIT'
+        for invocation in re.findall(r'windows-native-arm-sdk\.ps1\b[^\n]*', text):
+            assert ENGINE_ARGUMENT in invocation, (
+                f'{path.name}: the native ARM64 SDK step must pass {ENGINE_ARGUMENT}')
+            assert not HEX40.search(invocation.replace('${{ github.sha }}', '')), (
+                f'{path.name}: the native ARM64 SDK step names a literal revision')
+        checked.append(path.name)
+    assert checked, 'no workflow runs the native ARM64 SDK'
+    return checked
 
 
 def flake_input(repository, revision, name):
@@ -189,17 +203,25 @@ def main():
     parser = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
     parser.add_argument('--reprobuild', type=Path, default=ROOT.parent / 'reprobuild')
     parser.add_argument('--runquota', type=Path, default=ROOT.parent / 'runquota')
-    # An engine revision other than the workflow pin, for example the next
-    # release, can be checked with the runquota pin its own lock names.
+    parser.add_argument('--revision', help="the engine's Reprobuild commit (default: the pin's rev)")
+    parser.add_argument('--pin', type=Path,
+                        default=ROOT.parent / 'metacraft-github-actions/pins/reprobuild.json')
+    # Another engine revision, for example the next pin, can be checked with
+    # the runquota pin its own lock names.
     parser.add_argument('--engine-revision', action='append', default=[])
     args = parser.parse_args()
     check_policy_shape()
     check_hash_chain()
-    pins = workflow_pins()
-    revisions = {value for value in pins.values()}
-    assert len(revisions) == 1, f'workflows pin different engines: {pins}'
-    targets = list(revisions)
+    check_workflows()
+    if args.revision:
+        revision = args.revision
+    elif args.pin.is_file():
+        revision = json.loads(args.pin.read_text())['rev']
+    else:
+        raise AssertionError(f'no --revision and no pin file at {args.pin}')
+    assert FULL_SHA.fullmatch(revision), f'the engine must be a full commit SHA: {revision!r}'
     policy = json.loads(POLICY.read_text())
+    targets = [(revision, flake_input(args.reprobuild, revision, policy['runquota']['engineLockInput'])[2])]
     for extra in args.engine_revision:
         targets.append((extra, flake_input(args.reprobuild, extra, policy['runquota']['engineLockInput'])[2]))
     for target in targets:
