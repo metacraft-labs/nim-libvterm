@@ -84,6 +84,30 @@ try {
           @{ blake3 = 'blake3:36b62021a40c9e0101b7f8017478534a151cee6e4c7ce3af5b4fd18ad1946fa8'; sha256 = '1670A23F7292F271C667447C754BBE0EF04756776992672ED8E3DE40EF94B8D9' }
         )
       }
+      # 37a109c4 (v0.2.36). Re-reviewed 2026-11-27 by the agents-to-dev-
+      # 2026-11-27 promotion. Between d1bf1f06 and 37a109c4 the files that
+      # decide this Nim are byte-identical (same blob ids): env.ps1,
+      # windows/bootstrap-toolchain.ps1 (default root
+      # %LOCALAPPDATA%\reprobuild\toolchains, prebuilt mode),
+      # windows/ensure-nim.ps1 (https://nim-lang.org/download/nim-<v>_x64.zip,
+      # checked against its .sha256 sidecar and the pin),
+      # windows/toolchain-versions.env (NIM_VERSION=2.2.8, NIM_WIN_X64_SHA256
+      # below), windows/raise-nim-stack.ps1, and the catalog's packages/nim.nim.
+      # So the Nim did not change. The values were recomputed from the real
+      # bytes: nim-2.2.8_x64.zip downloaded from nim-lang.org hashes to the
+      # declared sha256 (and its sidecar agrees); its nim-2.2.8/bin/nim.exe
+      # (SizeOfStackReserve 2097152) gives the first identity, and the same
+      # file with that PE32+ field (optional header + 0x48) set to 134217728,
+      # as raise-nim-stack.ps1 does, gives the second. Its config/nim.cfg,
+      # config/config.nims and lib/nimbase.h match $configExpected below.
+      '37a109c4e1cf650e6eb79b11d9fadf6e49e64614' = @{
+        version = '2.2.8'
+        archiveSha256 = '11fe2415a64a791b899cc78e2eeacdde93b5f122f2fabc447db36d38002bfb8c'
+        identities = @(
+          @{ blake3 = 'blake3:8d42d677439c59b4c4ab37ac62b8f5a707aca621f9e15ada89b81321b28c166a'; sha256 = '6179EC4B30EE26F6352E55B915603554E2C86F1D38895698156EFB54A5438A84' },
+          @{ blake3 = 'blake3:36b62021a40c9e0101b7f8017478534a151cee6e4c7ce3af5b4fd18ad1946fa8'; sha256 = '1670A23F7292F271C667447C754BBE0EF04756776992672ED8E3DE40EF94B8D9' }
+        )
+      }
     }
     if ($env:REPRO_ORIGIN -ne 'pin') { throw "The reviewed native Nim follows the fleet Reprobuild pin; setup-dev-env reported origin '$($env:REPRO_ORIGIN)'." }
     $engine = "$env:REPRO_COMMIT"

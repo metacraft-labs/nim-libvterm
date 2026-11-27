@@ -25,6 +25,21 @@ $reviewedToolchainSources = @{
     'ensure-gcc.ps1' = '844f3d6ad5d7d8156159ea9bef021f60c142b45e6900bb114c07e31ec4b42005'
     'toolchain-versions.env' = '1f2fcb73e2704e78ed150c6703fa99ce4a386ebb78205f74678065da783ace92'
   }
+  # 37a109c4 (v0.2.36). Reviewed 2026-11-27 by the agents-to-dev-2026-11-27
+  # promotion: `git diff d1bf1f06 37a109c4 -- windows/` touches only
+  # windows/tests/HttpsDownloadFixture.cs, so the three files are
+  # byte-identical to the d1bf1f06 entry (same blob ids); toolchain-utils.ps1
+  # was re-read (function definitions and one constant at top level, nothing
+  # that runs on dot-sourcing), ensure-gcc.ps1 was re-read, and
+  # toolchain-versions.env still pins WinLibs GCC 16.1.0
+  # (16.1.0posix-14.0.0-ucrt-r2, sha256 78eff1e2...). The values below are the
+  # sha256 of the files raw.githubusercontent.com serves at 37a109c4, computed
+  # from those bytes, not copied from the entry above.
+  '37a109c4e1cf650e6eb79b11d9fadf6e49e64614' = [ordered]@{
+    'toolchain-utils.ps1' = '48fe021dfdd7fe16de7d9f9ea74a65f69fe5a67a01b9a9fce31638edcf52e6b2'
+    'ensure-gcc.ps1' = '844f3d6ad5d7d8156159ea9bef021f60c142b45e6900bb114c07e31ec4b42005'
+    'toolchain-versions.env' = '1f2fcb73e2704e78ed150c6703fa99ce4a386ebb78205f74678065da783ace92'
+  }
 }
 if ($env:REPRO_ORIGIN -ne 'pin') {
   throw "The native SDK sources follow the fleet Reprobuild pin; setup-dev-env reported origin '$($env:REPRO_ORIGIN)'."
