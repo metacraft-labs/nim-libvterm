@@ -84,6 +84,24 @@ try {
           @{ blake3 = 'blake3:36b62021a40c9e0101b7f8017478534a151cee6e4c7ce3af5b4fd18ad1946fa8'; sha256 = '1670A23F7292F271C667447C754BBE0EF04756776992672ED8E3DE40EF94B8D9' }
         )
       }
+      # e6c41d0a (v0.2.38): carried forward from reviewed rev d1bf1f06,
+      # byte-identical (verified by tool-pins agent, 2026-11-27). The Nim
+      # provisioning is the same at both commits: windows/ensure-nim.ps1 and
+      # windows/raise-nim-stack.ps1 are byte-identical, toolchain-versions.env
+      # keeps NIM_VERSION=2.2.8 and NIM_WIN_X64_SHA256, and the
+      # toolchain-utils.ps1 changes touch only the PE import / DLL closure
+      # audit, which ensure-nim.ps1 does not call. The version, the archive
+      # sha256 and both nim.exe identities below were recomputed from
+      # nim-lang.org's nim-2.2.8_x64.zip (unpatched, and with
+      # SizeOfStackReserve set to 134217728) and equal the d1bf1f06 entry.
+      'e6c41d0ab7b5f85cb41059064320c787bc14ca6c' = @{
+        version = '2.2.8'
+        archiveSha256 = '11fe2415a64a791b899cc78e2eeacdde93b5f122f2fabc447db36d38002bfb8c'
+        identities = @(
+          @{ blake3 = 'blake3:8d42d677439c59b4c4ab37ac62b8f5a707aca621f9e15ada89b81321b28c166a'; sha256 = '6179EC4B30EE26F6352E55B915603554E2C86F1D38895698156EFB54A5438A84' },
+          @{ blake3 = 'blake3:36b62021a40c9e0101b7f8017478534a151cee6e4c7ce3af5b4fd18ad1946fa8'; sha256 = '1670A23F7292F271C667447C754BBE0EF04756776992672ED8E3DE40EF94B8D9' }
+        )
+      }
     }
     if ($env:REPRO_ORIGIN -ne 'pin') { throw "The reviewed native Nim follows the fleet Reprobuild pin; setup-dev-env reported origin '$($env:REPRO_ORIGIN)'." }
     $engine = "$env:REPRO_COMMIT"
