@@ -50,7 +50,6 @@ try {
   $profile = $profiles[0]
   $expectedVersion = '2.2.10'
   if ($profile.installMethod -eq 'path') {
-    $expectedVersion = '2.2.8'
     # REVIEWED IDENTITY, re-reviewed 2026-11-18 for the fleet-pinned engine
     # (operator decision on isonim-pm issues/2026-11-18-nim-libvterm-windows-
     # x64-native-nim-binding-rejects-the-nim-the-fleet-pinned-engine-selects.md,
@@ -64,18 +63,62 @@ try {
     # on hosts that ran a reprobuild release job (observed on win-ci-bare-001),
     # giving 1670A23F... (verified: the archive's nim.exe with that one field
     # set to 134217728 hashes to exactly that). These two exact identities are
-    # the whole review; there is no pattern. The review binds to the engine
-    # source revision below, so a new engine pin is a deliberate re-review.
-    $reviewedEngine = '84b459adda91535f0b89424dfc95aa34bfa67a32'
-    $engineHead = (& git -C (Join-Path $root '.reprobuild-src') rev-parse HEAD).Trim()
-    if ($LASTEXITCODE -ne 0 -or $engineHead -ne $reviewedEngine) { throw "The reviewed native Nim identity covers reprobuild $reviewedEngine, not '$engineHead'; re-review the Nim the new engine provisions." }
+    # the whole review; there is no pattern.
+    #
+    # The review binds to the Reprobuild commit whose engine provisions the
+    # Nim, keyed by that commit. CI runs the fleet pin, `pins/reprobuild.json`
+    # in metacraft-labs/metacraft-github-actions, which setup-dev-env reports
+    # as `repro-commit` (REPRO_COMMIT here, with its origin in REPRO_ORIGIN).
+    # A pin bump therefore needs a new entry from someone who re-reviewed the
+    # Nim the new engine provisions; never copy an entry forward under a new
+    # key. A commit with no entry fails closed.
+    $reviewedPathNim = @{
+      # d1bf1f06 (v0.2.34). Re-reviewed in cdcb85d (2026-11-25): the same
+      # Nim 2.2.8 x64 archive into the same prefix, and a byte-identical
+      # windows/raise-nim-stack.ps1, so both identities above still hold.
+      'd1bf1f065aca01b90c3bbdddc57d14e977f49e1a' = @{
+        version = '2.2.8'
+        archiveSha256 = '11fe2415a64a791b899cc78e2eeacdde93b5f122f2fabc447db36d38002bfb8c'
+        identities = @(
+          @{ blake3 = 'blake3:8d42d677439c59b4c4ab37ac62b8f5a707aca621f9e15ada89b81321b28c166a'; sha256 = '6179EC4B30EE26F6352E55B915603554E2C86F1D38895698156EFB54A5438A84' },
+          @{ blake3 = 'blake3:36b62021a40c9e0101b7f8017478534a151cee6e4c7ce3af5b4fd18ad1946fa8'; sha256 = '1670A23F7292F271C667447C754BBE0EF04756776992672ED8E3DE40EF94B8D9' }
+        )
+      }
+      # 37a109c4 (v0.2.36). Re-reviewed 2026-11-27 by the agents-to-dev-
+      # 2026-11-27 promotion. Between d1bf1f06 and 37a109c4 the files that
+      # decide this Nim are byte-identical (same blob ids): env.ps1,
+      # windows/bootstrap-toolchain.ps1 (default root
+      # %LOCALAPPDATA%\reprobuild\toolchains, prebuilt mode),
+      # windows/ensure-nim.ps1 (https://nim-lang.org/download/nim-<v>_x64.zip,
+      # checked against its .sha256 sidecar and the pin),
+      # windows/toolchain-versions.env (NIM_VERSION=2.2.8, NIM_WIN_X64_SHA256
+      # below), windows/raise-nim-stack.ps1, and the catalog's packages/nim.nim.
+      # So the Nim did not change. The values were recomputed from the real
+      # bytes: nim-2.2.8_x64.zip downloaded from nim-lang.org hashes to the
+      # declared sha256 (and its sidecar agrees); its nim-2.2.8/bin/nim.exe
+      # (SizeOfStackReserve 2097152) gives the first identity, and the same
+      # file with that PE32+ field (optional header + 0x48) set to 134217728,
+      # as raise-nim-stack.ps1 does, gives the second. Its config/nim.cfg,
+      # config/config.nims and lib/nimbase.h match $configExpected below.
+      '37a109c4e1cf650e6eb79b11d9fadf6e49e64614' = @{
+        version = '2.2.8'
+        archiveSha256 = '11fe2415a64a791b899cc78e2eeacdde93b5f122f2fabc447db36d38002bfb8c'
+        identities = @(
+          @{ blake3 = 'blake3:8d42d677439c59b4c4ab37ac62b8f5a707aca621f9e15ada89b81321b28c166a'; sha256 = '6179EC4B30EE26F6352E55B915603554E2C86F1D38895698156EFB54A5438A84' },
+          @{ blake3 = 'blake3:36b62021a40c9e0101b7f8017478534a151cee6e4c7ce3af5b4fd18ad1946fa8'; sha256 = '1670A23F7292F271C667447C754BBE0EF04756776992672ED8E3DE40EF94B8D9' }
+        )
+      }
+    }
+    if ($env:REPRO_ORIGIN -ne 'pin') { throw "The reviewed native Nim follows the fleet Reprobuild pin; setup-dev-env reported origin '$($env:REPRO_ORIGIN)'." }
+    $engine = "$env:REPRO_COMMIT"
+    if ($engine -notmatch '^[0-9a-f]{40}$') { throw "setup-dev-env reported no full Reprobuild commit (REPRO_COMMIT='$engine')." }
+    if (-not $reviewedPathNim.ContainsKey($engine)) { throw "No reviewed native Nim entry for reprobuild $engine; re-review the Nim that engine provisions and add it, with who reviewed it, to `$reviewedPathNim in .github/scripts/bind-selected-native-nim.ps1." }
+    $review = $reviewedPathNim[$engine]
+    $expectedVersion = $review.version
     if ([string]::IsNullOrEmpty($env:LOCALAPPDATA)) { throw 'LOCALAPPDATA is unset; cannot locate the engine-provisioned Nim.' }
-    $reviewedPrefix = [System.IO.Path]::GetFullPath((Join-Path $env:LOCALAPPDATA 'reprobuild\toolchains\nim\2.2.8\prebuilt\nim-2.2.8'))
-    $reviewedArchiveSha = '11fe2415a64a791b899cc78e2eeacdde93b5f122f2fabc447db36d38002bfb8c'
-    $reviewedIdentities = @(
-      @{ blake3 = 'blake3:8d42d677439c59b4c4ab37ac62b8f5a707aca621f9e15ada89b81321b28c166a'; sha256 = '6179EC4B30EE26F6352E55B915603554E2C86F1D38895698156EFB54A5438A84' },
-      @{ blake3 = 'blake3:36b62021a40c9e0101b7f8017478534a151cee6e4c7ce3af5b4fd18ad1946fa8'; sha256 = '1670A23F7292F271C667447C754BBE0EF04756776992672ED8E3DE40EF94B8D9' }
-    )
+    $reviewedPrefix = [System.IO.Path]::GetFullPath((Join-Path $env:LOCALAPPDATA "reprobuild\toolchains\nim\$expectedVersion\prebuilt\nim-$expectedVersion"))
+    $reviewedArchiveSha = $review.archiveSha256
+    $reviewedIdentities = $review.identities
     $nim = [System.IO.Path]::GetFullPath($profile.resolvedExecutablePath)
     $reviewed = @($reviewedIdentities | Where-Object { $_.blake3 -eq $profile.resolvedExecutableDigest })
     if ($reviewed.Count -ne 1 -or $profile.packageSelector -ne 'nim' -or $profile.packageId -ne 'nim' -or $profile.executableName -ne 'nim' -or $profile.declaredExecutablePath -ne 'nim' -or $nim -ne (Join-Path $reviewedPrefix 'bin\nim.exe') -or $profile.selectedStorePath -ne '' -or $profile.lockIdentity -ne '' -or @($profile.realizedStorePaths).Count -ne 0 -or $profile.tarballUrl -ne '' -or $profile.tarballSha256 -ne '') { throw 'Unreviewed native PATH Nim profile.' }
@@ -117,7 +160,8 @@ try {
       if (-not $files.Contains($required)) { throw "Missing native PATH standard library: $required" }
     }
     $proof.nativePathMatchedFiles = $files
-    $proof.bindingVariant = 'already-selected-native-path-2.2.8'
+    $proof.bindingVariant = "already-selected-native-path-$expectedVersion"
+    $proof.reviewedEngine = $engine
   } else {
   $archiveSha = 'e6eaf87df71f83629a8877ac496bcd8cdb7755f9e860b982bb0b886e38eac1c3'
   # Ordered [name, actual, expected] comparisons: the same conjuncts as before,

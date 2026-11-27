@@ -40,7 +40,7 @@ nimcache := ".nimcache"
 
 # The ordered list of test files. Adding a new test_*.nim here gates it
 # on CI.
-tests := "tests/test_libvterm_basic_hello.nim tests/test_libvterm_csi_cursor_move.nim tests/test_libvterm_sgr_color_full_palette.nim tests/test_libvterm_resize_round_trip.nim tests/test_libvterm_alternate_screen.nim tests/test_osc7_cwd.nim tests/test_osc8_hyperlink.nim tests/test_osc9_notification.nim tests/test_dec_2026_synchronized_output.nim tests/test_csi_t_window_ops.nim tests/test_kitty_keyboard.nim tests/test_modify_other_keys.nim tests/test_mouse_protocol.nim tests/test_mouse_tracking.nim tests/test_state_mirror_pull_after_push.nim tests/test_image_registry.nim tests/test_decode_kitty_rgba.nim tests/test_decode_sixel.nim tests/test_decode_sixel_hls.nim tests/test_decode_iterm2.nim tests/test_decode_png_rgba.nim tests/test_decode_png_rgb.nim tests/test_decode_png_invalid.nim tests/test_decode_jpeg_rgba.nim tests/test_decode_gif_rgba.nim tests/test_dcs_sixel_ingest.nim tests/test_apc_kitty_ingest.nim tests/test_apc_kitty_png_defer.nim tests/test_kitty_png_ingest.nim tests/test_iterm2_png_decode.nim tests/test_iterm2_jpeg_decode.nim tests/test_iterm2_gif_decode.nim tests/test_sgr_extended_underline.nim tests/test_sgr_underline_color.nim tests/test_wide_glyph_continuation_cell.nim tests/test_utf8_split_across_feeds.nim tests/test_replies_to_queries.nim tests/test_api_invariants.nim tests/test_gc_traced_inner_block.nim tests/test_no_leaks.nim tests/test_nimcache_is_worktree_local.nim"
+tests := "tests/test_libvterm_basic_hello.nim tests/test_libvterm_csi_cursor_move.nim tests/test_libvterm_sgr_color_full_palette.nim tests/test_libvterm_resize_round_trip.nim tests/test_libvterm_alternate_screen.nim tests/test_osc7_cwd.nim tests/test_osc8_hyperlink.nim tests/test_osc9_notification.nim tests/test_dec_2026_synchronized_output.nim tests/test_csi_t_window_ops.nim tests/test_kitty_keyboard.nim tests/test_modify_other_keys.nim tests/test_mouse_protocol.nim tests/test_mouse_tracking.nim tests/test_state_mirror_pull_after_push.nim tests/test_image_registry.nim tests/test_decode_kitty_rgba.nim tests/test_decode_sixel.nim tests/test_decode_sixel_hls.nim tests/test_decode_iterm2.nim tests/test_decode_png_rgba.nim tests/test_decode_png_rgb.nim tests/test_decode_png_invalid.nim tests/test_decode_jpeg_rgba.nim tests/test_decode_gif_rgba.nim tests/test_dcs_sixel_ingest.nim tests/test_apc_kitty_ingest.nim tests/test_apc_kitty_png_defer.nim tests/test_kitty_png_ingest.nim tests/test_iterm2_png_decode.nim tests/test_iterm2_jpeg_decode.nim tests/test_iterm2_gif_decode.nim tests/test_sgr_extended_underline.nim tests/test_sgr_underline_color.nim tests/test_wide_glyph_continuation_cell.nim tests/test_utf8_split_across_feeds.nim tests/test_sgr_split_across_feeds.nim tests/test_replies_to_queries.nim tests/test_one_nim_contributor_per_platform.nim tests/test_api_invariants.nim tests/test_gc_traced_inner_block.nim tests/test_no_leaks.nim tests/test_nimcache_is_worktree_local.nim"
 
 # --- Default targets (per repo-requirements.md) ---
 
@@ -234,8 +234,24 @@ bench-quick:
 test-dev-shell:
     bash tests/test_dev_shell_writes_nothing_elsewhere.sh
 
-# Compile each workflow-selected engine's real reader against the shipping lock.
-# Needs an adjacent Reprobuild Git checkout containing the selected revision
-# (or --reprobuild <dir>) and python3.
+# Compile the CI engine's real reader (the fleet Reprobuild pin) against the
+# shipping lock. Needs adjacent metacraft-github-actions (pins/reprobuild.json)
+# and Reprobuild Git checkouts, the latter containing the pinned revision
+# (or --reprobuild <dir>), and python3.
 test-ci-engine-lock:
     python3 tests/test_ci_engine_reads_committed_lock.py
+
+# Check that the native Windows ARM64 runquota policy names no pinned values and
+# that its PowerShell derivation resolves the fleet Reprobuild pin. Needs pwsh,
+# adjacent metacraft-github-actions (pins/reprobuild.json), reprobuild and
+# runquota Git checkouts (or --pin/--revision, --reprobuild/--runquota) and
+# network access for the nim-shm-lease fetch.
+test-native-arm-runquota-policy:
+    python3 tests/test_native_arm_runquota_policy.py
+
+# Check that the Windows ARM64 leg asks setup-dev-env for no job-scoped Git
+# credential and no exported build environment, and that the pinned
+# setup-dev-env revision has both inputs. Needs an adjacent
+# metacraft-github-actions Git checkout.
+test-native-arm-job-env:
+    python3 tests/test_native_arm_job_env.py --actions ../metacraft-github-actions

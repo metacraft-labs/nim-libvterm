@@ -6,12 +6,52 @@ if ([System.Runtime.InteropServices.RuntimeInformation]::OSArchitecture.ToString
 if (-not (Get-Command Get-FileHash -ErrorAction SilentlyContinue)) {
   throw 'The pinned supported installer requires the native PowerShell Get-FileHash cmdlet.'
 }
-$revision = '84b459adda91535f0b89424dfc95aa34bfa67a32'
-$files = [ordered]@{
-  'toolchain-utils.ps1' = '82f0192b6c7b35f644bdcc3311f3ac3ac33ebab31938dafd5f9d8ed91568c422'
-  'ensure-gcc.ps1' = 'e9f705dcdc2a30c343acfdc274530161d700c1c203e959c6ec59774bc47ee7d6'
-  'toolchain-versions.env' = '8a5138e9dcdcbf586414002edf8f2cdb13029f677f46068a57f5235897bda8db'
+# The toolchain files come from the Reprobuild commit CI runs: the fleet pin,
+# `pins/reprobuild.json` in metacraft-labs/metacraft-github-actions, which
+# setup-dev-env installs and reports as its `repro-commit` output. The workflow
+# passes that output in REPRO_COMMIT and the pin/override origin in
+# REPRO_ORIGIN.
+#
+# Each file is executed (dot-sourced) or trusted as the compiler pin, so its
+# sha256 is bound by a review of that commit's file, keyed by the commit. A
+# pin bump therefore needs a new entry from someone who read the three files
+# at the new commit; never copy an entry forward under a new key. A commit
+# with no entry fails closed here, before anything is downloaded.
+$reviewedToolchainSources = @{
+  # d1bf1f06 (v0.2.34). Bound in cdcb85d (2026-11-25) as those files' sha256
+  # at that commit; no separate reviewer was recorded.
+  'd1bf1f065aca01b90c3bbdddc57d14e977f49e1a' = [ordered]@{
+    'toolchain-utils.ps1' = '48fe021dfdd7fe16de7d9f9ea74a65f69fe5a67a01b9a9fce31638edcf52e6b2'
+    'ensure-gcc.ps1' = '844f3d6ad5d7d8156159ea9bef021f60c142b45e6900bb114c07e31ec4b42005'
+    'toolchain-versions.env' = '1f2fcb73e2704e78ed150c6703fa99ce4a386ebb78205f74678065da783ace92'
+  }
+  # 37a109c4 (v0.2.36). Reviewed 2026-11-27 by the agents-to-dev-2026-11-27
+  # promotion: `git diff d1bf1f06 37a109c4 -- windows/` touches only
+  # windows/tests/HttpsDownloadFixture.cs, so the three files are
+  # byte-identical to the d1bf1f06 entry (same blob ids); toolchain-utils.ps1
+  # was re-read (function definitions and one constant at top level, nothing
+  # that runs on dot-sourcing), ensure-gcc.ps1 was re-read, and
+  # toolchain-versions.env still pins WinLibs GCC 16.1.0
+  # (16.1.0posix-14.0.0-ucrt-r2, sha256 78eff1e2...). The values below are the
+  # sha256 of the files raw.githubusercontent.com serves at 37a109c4, computed
+  # from those bytes, not copied from the entry above.
+  '37a109c4e1cf650e6eb79b11d9fadf6e49e64614' = [ordered]@{
+    'toolchain-utils.ps1' = '48fe021dfdd7fe16de7d9f9ea74a65f69fe5a67a01b9a9fce31638edcf52e6b2'
+    'ensure-gcc.ps1' = '844f3d6ad5d7d8156159ea9bef021f60c142b45e6900bb114c07e31ec4b42005'
+    'toolchain-versions.env' = '1f2fcb73e2704e78ed150c6703fa99ce4a386ebb78205f74678065da783ace92'
+  }
 }
+if ($env:REPRO_ORIGIN -ne 'pin') {
+  throw "The native SDK sources follow the fleet Reprobuild pin; setup-dev-env reported origin '$($env:REPRO_ORIGIN)'."
+}
+$revision = "$env:REPRO_COMMIT"
+if ($revision -notmatch '^[0-9a-f]{40}$') {
+  throw "setup-dev-env reported no full Reprobuild commit (REPRO_COMMIT='$revision')."
+}
+if (-not $reviewedToolchainSources.ContainsKey($revision)) {
+  throw "No reviewed entry for Reprobuild $revision. Review windows/toolchain-utils.ps1, windows/ensure-gcc.ps1 and windows/toolchain-versions.env at that commit and add their sha256 values, with who reviewed them, to `$reviewedToolchainSources in .github/scripts/windows-native-compiler-sdk.ps1."
+}
+$files = $reviewedToolchainSources[$revision]
 $root = Join-Path $env:RUNNER_TEMP ('libvterm-native-sdk-' + [Guid]::NewGuid().ToString('N'))
 New-Item -ItemType Directory -Path $root | Out-Null
 foreach ($entry in $files.GetEnumerator()) {

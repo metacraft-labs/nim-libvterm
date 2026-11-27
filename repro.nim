@@ -84,6 +84,9 @@
 import repro_project_dsl
 import std/[os, json]
 when defined(linux) or defined(macosx):
+  # Canonical nim is the one nim contributor on every platform:
+  # libvterm_sdk_contribution contributes the compiler and bash, never nim
+  # (see that file for why a platform carve-out cannot work for consumers).
   import repro_dsl_stdlib/packages/nim as canonicalNim
   when defined(macosx):
     import repro_dsl_stdlib/packages/clang as canonicalBackend
@@ -195,6 +198,8 @@ const libvtermTestSpecs: seq[LibvtermTestSpec] = @[
     binary: "build/test-bin/test_sgr_extended_underline"),
   LibvtermTestSpec(source: "tests/test_sgr_underline_color.nim",
     binary: "build/test-bin/test_sgr_underline_color"),
+  LibvtermTestSpec(source: "tests/test_one_nim_contributor_per_platform.nim",
+    binary: "build/test-bin/test_one_nim_contributor_per_platform"),
   LibvtermTestSpec(source: "tests/test_api_invariants.nim",
     binary: "build/test-bin/test_api_invariants"),
   # ``test_no_leaks.nim`` — portable; its ``when defined(linux):`` arms
@@ -208,6 +213,8 @@ const libvtermTestSpecs: seq[LibvtermTestSpec] = @[
     binary: "build/test-bin/test_nimcache_is_worktree_local"),
   LibvtermTestSpec(source: "tests/test_utf8_split_across_feeds.nim",
     binary: "build/test-bin/test_utf8_split_across_feeds"),
+  LibvtermTestSpec(source: "tests/test_sgr_split_across_feeds.nim",
+    binary: "build/test-bin/test_sgr_split_across_feeds"),
   LibvtermTestSpec(source: "tests/test_wide_glyph_continuation_cell.nim",
     binary: "build/test-bin/test_wide_glyph_continuation_cell"),
 ]
@@ -311,6 +318,14 @@ package nim_libvterm:
           (when defined(arm64): @["ci/windows-native-arm-sdk.ps1", "ci/native-python-owned-path.ps1"]
            else: @[".github/scripts/windows-native-compiler-sdk.ps1"])
       else: newSeq[string]()
+      # The contributor test `staticRead`s the recipe sources it checks, so
+      # they are inputs of its compile on every platform (the Unix sdkInputs
+      # already carry libvterm_sdk_contribution.nim).
+      var recipeSourceInputs: seq[string] = @[]
+      if source == "tests/test_one_nim_contributor_per_platform.nim":
+        for path in ["repro.nim", "libvterm_sdk_contribution.nim"]:
+          if path notin sdkInputs:
+            recipeSourceInputs.add path
       let zlibPassC = when defined(windows):
         @["-Ibuild/windows-zlib-sdk/include"] &
           (when defined(arm64): @["--target=aarch64-w64-mingw32"] else: @[])
@@ -325,7 +340,8 @@ package nim_libvterm:
         defines = @["release"],
         paths = @["src", "tests"],
         extraInputs = @["src", "tests", "vendor/libvterm", "config.nims",
-                        "nim_libvterm.nimble"] & sdkInputs & nativeArmInputs,
+                        "nim_libvterm.nimble"] & sdkInputs & nativeArmInputs &
+                      recipeSourceInputs,
         mm = "orc",
         extraPassC = @["-w"] & zlibPassC,
         extraPassL = zlibPassL,
