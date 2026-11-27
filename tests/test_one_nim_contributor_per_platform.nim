@@ -26,8 +26,13 @@
 ## nim on any branch, and the canonical-nim import sits in the same block as
 ## the SDK import with no further guard. Either regression -- an SDK nim on any
 ## platform, or a guard that drops canonical nim somewhere -- fails a check.
+##
+## Plain `doAssert` checks, like the rest of this suite, rather than
+## std/unittest: unittest's global console formatter is allocated at module
+## init and never freed, which valgrind (`just test-valgrind`) reports as a
+## possibly-lost block and fails the module on.
 
-import std/[strutils, unittest]
+import std/strutils
 
 const
   ReproNim = staticRead("../repro.nim")
@@ -60,21 +65,34 @@ proc enclosingHeader(lines: seq[string]; index: int): string =
     dec i
   ""
 
-suite "one nim contributor per platform":
+proc sdkDeclaresNoNim() =
+  ## The SDK contribution declares no nim on any platform.
+  for line in codeLines(SdkContribution):
+    let stripped = line.strip()
+    doAssert not stripped.startsWith("provisioningFor \"nim\""),
+      "libvterm_sdk_contribution.nim declares a nim: " & stripped
+    doAssert not stripped.contains("executablePath = \"bin/nim\""),
+      "libvterm_sdk_contribution.nim declares a nim executable: " & stripped
+  echo "  [OK] the SDK contribution declares no nim on any platform"
 
-  test "the SDK contribution declares no nim on any platform":
-    for line in codeLines(SdkContribution):
-      let stripped = line.strip()
-      check not stripped.startsWith("provisioningFor \"nim\"")
-      check not stripped.contains("executablePath = \"bin/nim\"")
+proc canonicalNimBesideSdk() =
+  ## Canonical nim is imported wherever the SDK contribution is.
+  let lines = codeLines(ReproNim)
+  var canonicalHeaders, sdkHeaders: seq[string]
+  for i, line in lines:
+    case line.strip()
+    of CanonicalImport: canonicalHeaders.add enclosingHeader(lines, i)
+    of SdkImport: sdkHeaders.add enclosingHeader(lines, i)
+    else: discard
+  doAssert canonicalHeaders == @[UnixGuard],
+    "canonical nim import guards in repro.nim: " & $canonicalHeaders &
+    ", expected " & $(@[UnixGuard])
+  doAssert sdkHeaders == @[UnixGuard],
+    "SDK contribution import guards in repro.nim: " & $sdkHeaders &
+    ", expected " & $(@[UnixGuard])
+  echo "  [OK] canonical nim is imported wherever the SDK contribution is"
 
-  test "canonical nim is imported wherever the SDK contribution is":
-    let lines = codeLines(ReproNim)
-    var canonicalHeaders, sdkHeaders: seq[string]
-    for i, line in lines:
-      case line.strip()
-      of CanonicalImport: canonicalHeaders.add enclosingHeader(lines, i)
-      of SdkImport: sdkHeaders.add enclosingHeader(lines, i)
-      else: discard
-    check canonicalHeaders == @[UnixGuard]
-    check sdkHeaders == @[UnixGuard]
+echo "[Suite] one nim contributor per platform"
+sdkDeclaresNoNim()
+canonicalNimBesideSdk()
+echo "test_one_nim_contributor_per_platform OK"
