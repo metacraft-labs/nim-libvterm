@@ -323,7 +323,12 @@ jobs:
       # (`cannot open file: results`, codetracer_ct_print.nim(24, 8)). These
       # artifacts are the only way to find out why any of it actually fails.
       - name: Original native build comparison after Windows failure
-        if: failure() && runner.os == 'Windows'
+        # On arm64 the step runs inside native-owning-source, which only the
+        # clean-checkout step creates. When an earlier step failed before that
+        # checkout, there is nothing to compare, and starting the shell in a
+        # missing directory would replace the real error with "The directory
+        # name is invalid". So on arm64 it runs only when the checkout exists.
+        if: failure() && runner.os == 'Windows' && (matrix.arch != 'arm64' || hashFiles('native-owning-source/Justfile') != '')
         # Supplementary comparison only; the original monitored failure remains.
         working-directory: ${{ runner.os == 'Windows' && matrix.arch == 'arm64' && 'native-owning-source' || '.' }}
         run: dev-exec just build
