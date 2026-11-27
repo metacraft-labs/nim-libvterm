@@ -109,10 +109,16 @@ jobs:
           # The native Windows ARM64 steps below refuse inherited Git runtime
           # configuration and an inherited RunQuota or toolchain, so on that leg
           # setup-dev-env installs no job-scoped Git credential and keeps the
-          # x64 source build's environment out of later steps.
-          # tests/test_native_arm_job_env.py checks both.
+          # x64 source build's environment out of later steps. That leg also
+          # asks for a source build of the pinned engine, because
+          # ci/native-arm-runquota.ps1 drives repro from the engine source
+          # checkout with runquota beside it, which the pin's prerelease
+          # bundle does not provide. setup-dev-env honours this once its
+          # `@dev` carries metacraft-github-actions#148.
+          # tests/test_native_arm_job_env.py checks all three.
           git-access: ${{ runner.os == 'Windows' && matrix.arch == 'arm64' && 'none' || 'read' }}
           export-build-env: ${{ runner.os == 'Windows' && matrix.arch == 'arm64' && 'false' || 'true' }}
+          repro-from-source: ${{ runner.os == 'Windows' && matrix.arch == 'arm64' && 'true' || 'false' }}
 
       - name: Collect failed Linux ARM bootstrap resource scope
         if: failure() && matrix.os == 'linux' && matrix.arch == 'arm64' && steps.source_setup.outcome == 'failure'

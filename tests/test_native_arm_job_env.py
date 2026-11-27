@@ -13,6 +13,9 @@ setup-dev-env, which runs first and builds an x64 Reprobuild CLI under
 emulation, exports both by default. So on that leg each workflow asks
 setup-dev-env for `git-access: none` and `export-build-env: false`, and
 keeps the defaults everywhere else. The guards themselves stay as they are.
+The same leg asks for `repro-from-source: true`: ci/native-arm-runquota.ps1
+runs repro from the engine source checkout with runquota beside it, and the
+pin's Windows prerelease bundle is neither. The other legs keep the default.
 
 Workflow checks always run. With --actions <metacraft-github-actions Git
 checkout>, the setup-dev-env revision the workflows use (a commit, or `dev`,
@@ -32,6 +35,7 @@ ARM64 = "runner.os == 'Windows' && matrix.arch == 'arm64'"
 EXPECTED = {
     'git-access': "${{ " + ARM64 + " && 'none' || 'read' }}",
     'export-build-env': "${{ " + ARM64 + " && 'false' || 'true' }}",
+    'repro-from-source': "${{ " + ARM64 + " && 'true' || 'false' }}",
 }
 GUARD = "'^GIT_CONFIG_(COUNT|PARAMETERS|KEY_[0-9]+|VALUE_[0-9]+)$'"
 USES = re.compile(r'uses: metacraft-labs/metacraft-github-actions/setup-dev-env@([0-9a-f]{40}|dev)\b')
